@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="ru">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>Dota 2 Hub - Interface Template</title>
+    </head>
+    <body>
+        <div id="app">
+            <div id="auth-screen">
+                <div class="auth-box">
+                    <h2>Подключение к сети Dota 2</h2>
+                    <input
+                        type="text"
+                        id="login-input"
+                        placeholder="ВВЕДИТЕ ПОЗЫВНОЙ..."
+                        autocomplete="off"
+                    />
+                    <button class="dota-btn" id="login-btn">В ХАБ</button>
+                    <div id="login-error" class="hidden"></div>
+                </div>
+            </div>
+
+            <div id="chat-layout" class="hidden"></div>
+
+            <div id="profile-modal" class="hidden">
+                <div class="modal-box">
+                    <h3>Настройки профиля</h3>
+                    <p>
+                        Панель кастомизации и редактирования карточки игрока
+                        находится в разработке.
+                    </p>
+                    <button class="dota-btn" id="modal-close-btn">
+                        ВЕРНУТЬСЯ
+                    </button>
+                </div>
+            </div>
+        </div>
+        <script type="module" src="./src/main.js"></script>
+    </body>
+</html>

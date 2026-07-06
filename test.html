@@ -1,0 +1,593 @@
+<!doctype html>
+<html lang="ru">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>Dota 2 Hub - Interface Template</title>
+        <style>
+            /* === ОБНУЛЕНИЕ И БАЗОВЫЕ СТИЛИ ПОД ИГРУ === */
+            * {
+                box-sizing: border-box;
+                margin: 0;
+                padding: 0;
+                font-family: "Radiance", "Arial", sans-serif;
+                user-select: none;
+                outline: none;
+            }
+
+            body,
+            html {
+                width: 100%;
+                height: 100%;
+                overflow: hidden;
+                background-color: #0b0c0d;
+                color: #b0b5ba;
+                font-size: 13px;
+            }
+
+            /* Задний фон (assets/background.jpg) */
+            .game-background {
+                position: fixed;
+                top: 0;
+                left: 0;
+                width: 100%;
+                height: 100%;
+                /* Временный качественный арт из доты для демонстрации */
+                background:
+                    linear-gradient(
+                        rgba(11, 12, 13, 0.4),
+                        rgba(11, 12, 13, 0.8)
+                    ),
+                    url("https://images.unsplash.com/photo-1542751371-adc38448a05e?q=80&w=1920")
+                        no-repeat center center;
+                background-size: cover;
+                z-index: -1;
+            }
+
+            .hidden {
+                display: none !important;
+            }
+
+            /* === 1. ПОДКЛЮЧЕНИЕ К СЕТИ DOTA 2 (АВТОРИЗАЦИЯ) === */
+            #auth-screen {
+                position: fixed;
+                top: 0;
+                left: 0;
+                width: 100%;
+                height: 100%;
+                display: flex;
+                justify-content: center;
+                align-items: center;
+                z-index: 100;
+                background: rgba(0, 0, 0, 0.7);
+                backdrop-filter: blur(10px);
+                transition: opacity 0.3s ease;
+            }
+
+            .auth-box {
+                background: rgba(22, 23, 26, 0.95);
+                border: 1px solid #4a1515;
+                box-shadow:
+                    0 0 40px rgba(255, 0, 0, 0.1),
+                    inset 0 0 20px rgba(0, 0, 0, 0.9);
+                padding: 40px;
+                width: 380px;
+                text-align: center;
+                border-radius: 2px;
+            }
+
+            .auth-box h2 {
+                color: #ccc0a9;
+                font-size: 14px;
+                letter-spacing: 2px;
+                margin-bottom: 25px;
+                text-transform: uppercase;
+                text-shadow: 0 0 8px rgba(204, 192, 169, 0.3);
+            }
+
+            .auth-box input {
+                width: 100%;
+                background: #111214;
+                border: 1px solid #333438;
+                padding: 12px;
+                color: #fff;
+                margin-bottom: 20px;
+                text-align: center;
+                letter-spacing: 1px;
+                font-size: 14px;
+                transition: border-color 0.2s;
+            }
+
+            .auth-box input:focus {
+                border-color: #731d1d;
+            }
+
+            /* Монолитная дотерская кнопка */
+            .dota-btn {
+                background: linear-gradient(
+                    to bottom,
+                    #801a1a 0%,
+                    #4a1010 100%
+                );
+                border: 1px solid #992424;
+                color: #fff;
+                padding: 12px 35px;
+                font-weight: bold;
+                letter-spacing: 2px;
+                cursor: pointer;
+                text-transform: uppercase;
+                box-shadow: 0 4px 10px rgba(0, 0, 0, 0.6);
+                transition: all 0.2s;
+            }
+
+            .dota-btn:hover {
+                filter: brightness(1.2);
+                box-shadow: 0 0 15px rgba(255, 30, 30, 0.3);
+            }
+
+            /* === 2. ГЛАВНЫЙ ИНТЕРФЕЙС === */
+            #chat-layout {
+                display: flex;
+                width: 100%;
+                height: 100%;
+                position: relative;
+            }
+
+            /* === ЛЕВАЯ ПАНЕЛЬ СТРОГО ПО С КРИНШОТУ === */
+            #sidebar {
+                width: 290px;
+                height: 100%;
+                background: rgba(16, 17, 20, 0.82);
+                backdrop-filter: blur(12px);
+                border-right: 1px solid rgba(255, 255, 255, 0.03);
+                display: flex;
+                flex-direction: column;
+                z-index: 10;
+            }
+
+            /* Карточка профиля */
+            .profile-card {
+                padding: 16px 20px;
+                display: flex;
+                align-items: center;
+                gap: 12px;
+                cursor: pointer;
+                background: rgba(0, 0, 0, 0.2);
+                border-bottom: 1px solid rgba(255, 255, 255, 0.02);
+                transition: background 0.2s;
+            }
+
+            .profile-card:hover {
+                background: rgba(255, 255, 255, 0.03);
+            }
+
+            .avatar-stub {
+                width: 38px;
+                height: 38px;
+                background: #2a2c30;
+                border: 1px solid #555;
+                background-image: url("https://images.unsplash.com/photo-1534528741775-53994a69daeb?q=80&w=100");
+                background-size: cover;
+            }
+
+            .profile-info {
+                display: flex;
+                flex-direction: column;
+            }
+
+            .profile-name {
+                color: #fff;
+                font-weight: bold;
+                font-size: 14px;
+                letter-spacing: 0.5px;
+            }
+
+            .profile-status {
+                color: #6cf06c;
+                font-size: 10px;
+                text-transform: uppercase;
+                letter-spacing: 1px;
+                margin-top: 2px;
+                display: flex;
+                align-items: center;
+                text-shadow: 0 0 5px rgba(108, 240, 108, 0.4);
+            }
+
+            .profile-status::before {
+                content: "";
+                width: 5px;
+                height: 5px;
+                background: #6cf06c;
+                border-radius: 50%;
+                margin-right: 6px;
+                display: inline-block;
+                box-shadow: 0 0 4px #6cf06c;
+            }
+
+            /* Строка поиска под профилем */
+            .search-container {
+                padding: 10px 15px;
+                background: rgba(0, 0, 0, 0.1);
+            }
+
+            .search-input {
+                width: 100%;
+                background: #131417;
+                border: 1px solid #28292d;
+                padding: 8px 12px;
+                color: #ccc;
+                font-size: 12px;
+                border-radius: 2px;
+            }
+
+            .search-input:focus {
+                border-color: #444;
+            }
+
+            /* Список чатов */
+            .sidebar-category-title {
+                padding: 12px 20px 6px 20px;
+                font-size: 11px;
+                color: #5d6266;
+                text-transform: uppercase;
+                letter-spacing: 1.5px;
+                font-weight: bold;
+            }
+
+            .chats-list {
+                list-style: none;
+                overflow-y: auto;
+                flex: 1;
+            }
+
+            .chat-item {
+                padding: 12px 20px;
+                cursor: pointer;
+                border-left: 3px solid transparent;
+                transition: all 0.15s;
+                color: #92989e;
+                font-size: 13px;
+            }
+
+            .chat-item:hover {
+                background: rgba(255, 255, 255, 0.02);
+                color: #fff;
+            }
+
+            .chat-item.active {
+                background: linear-gradient(
+                    to right,
+                    rgba(115, 29, 29, 0.2),
+                    transparent
+                );
+                border-left-color: #992424;
+                color: #fff;
+                text-shadow: 0 0 4px rgba(255, 255, 255, 0.2);
+            }
+
+            /* === ЦЕНТРАЛЬНАЯ ЗОНА И ВЫЕЗЖАЮЩИЙ ЧАТ === */
+            #main-content {
+                flex: 1;
+                height: 100%;
+                position: relative;
+            }
+
+            /* ОКНО ЧАТА (ВЫЕЗЖАЕТ СНИЗУ ВВЕРХ) */
+            #chat-window {
+                position: absolute;
+                left: 30px;
+                right: 30px;
+                bottom: 0;
+                height: 75%; /* Занимает нижнюю и среднюю часть как в Доте */
+                background: rgba(19, 20, 24, 0.96);
+                border: 1px solid #2d1a1a;
+                border-bottom: none;
+                box-shadow: 0 -15px 40px rgba(0, 0, 0, 0.9);
+                display: flex;
+                flex-direction: column;
+
+                /* Дефолтное состояние скрыто внизу */
+                transform: translateY(105%);
+                transition: transform 0.35s cubic-bezier(0.16, 1, 0.3, 1);
+                z-index: 5;
+            }
+
+            /* Класс активации анимации */
+            #chat-window.slide-up {
+                transform: translateY(0);
+            }
+
+            /* Шапка выезжающего чата */
+            .chat-header {
+                padding: 14px 20px;
+                background: rgba(11, 12, 14, 0.6);
+                border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+            }
+
+            .chat-title {
+                color: #ccc0a9;
+                text-transform: uppercase;
+                letter-spacing: 1px;
+                font-weight: bold;
+            }
+
+            .close-chat-btn {
+                background: none;
+                border: none;
+                color: #5d6266;
+                font-size: 22px;
+                cursor: pointer;
+                line-height: 1;
+            }
+
+            .close-chat-btn:hover {
+                color: #fff;
+            }
+
+            /* Контейнер сообщений */
+            .messages-box {
+                flex: 1;
+                padding: 20px;
+                overflow-y: auto;
+                display: flex;
+                flex-direction: column;
+                gap: 12px;
+            }
+
+            .msg {
+                background: rgba(255, 255, 255, 0.01);
+                padding: 8px 14px;
+                max-width: 85%;
+                align-self: flex-start;
+                border-left: 2px solid #444;
+            }
+
+            .msg.system {
+                border-left-color: #ccc0a9;
+                background: rgba(204, 192, 169, 0.02);
+                color: #ccc0a9;
+                font-size: 12px;
+            }
+
+            .msg-author {
+                font-weight: bold;
+                color: #709cb8;
+                margin-bottom: 2px;
+            }
+
+            /* Строка ввода в самом низу окна чата */
+            .input-container {
+                padding: 15px 20px;
+                background: rgba(11, 12, 14, 0.4);
+                border-top: 1px solid rgba(255, 255, 255, 0.04);
+                display: flex;
+                gap: 12px;
+            }
+
+            .input-container input {
+                flex: 1;
+                background: #111214;
+                border: 1px solid #28292d;
+                padding: 12px;
+                color: #fff;
+            }
+
+            /* === 3. МОДАЛКА ПРОФИЛЯ ("ИГРА НАЙДЕНА") === */
+            #profile-modal {
+                position: fixed;
+                top: 0;
+                left: 0;
+                width: 100%;
+                height: 100%;
+                background: rgba(0, 0, 0, 0.75);
+                backdrop-filter: blur(8px);
+                z-index: 200;
+                display: flex;
+                justify-content: center;
+                align-items: center;
+                transition: opacity 0.25s ease;
+            }
+
+            .modal-box {
+                background: linear-gradient(135deg, #1c1d22 0%, #0c0d10 100%);
+                border: 2px solid #a38144; /* Золотая рамка принятия игры */
+                box-shadow: 0 0 50px rgba(163, 129, 68, 0.25);
+                width: 420px;
+                padding: 35px;
+                text-align: center;
+            }
+
+            .modal-box h3 {
+                color: #a38144;
+                text-transform: uppercase;
+                letter-spacing: 2px;
+                margin-bottom: 12px;
+                font-size: 16px;
+            }
+
+            .modal-box p {
+                color: #83888c;
+                margin-bottom: 25px;
+                font-size: 13px;
+            }
+        </style>
+    </head>
+    <body>
+        <div class="game-background"></div>
+
+        <div id="auth-screen">
+            <div class="auth-box">
+                <h2>Подключение к сети Dota 2</h2>
+                <input
+                    type="text"
+                    id="username-input"
+                    placeholder="ВВЕДИТЕ ПОЗЫВНОЙ..."
+                    autocomplete="off"
+                />
+                <button class="dota-btn" onclick="fakeLogin()">В ХАБ</button>
+            </div>
+        </div>
+
+        <div id="chat-layout" class="hidden">
+            <div id="sidebar">
+                <div class="profile-card" onclick="openProfileModal()">
+                    <div class="avatar-stub"></div>
+                    <div class="profile-info">
+                        <div class="profile-name" id="display-name">Player</div>
+                        <div class="profile-status">В главном меню</div>
+                    </div>
+                </div>
+
+                <div class="search-container">
+                    <input
+                        type="text"
+                        class="search-input"
+                        placeholder="Найти человека или канал..."
+                        autocomplete="off"
+                    />
+                </div>
+
+                <div class="sidebar-category-title">Текстовые каналы</div>
+                <ul class="chats-list">
+                    <li
+                        class="chat-item"
+                        onclick="openChat(this, 'Общий чат Ру-хаба')"
+                    >
+                        # Общий чат Ру-хаба
+                    </li>
+                    <li
+                        class="chat-item"
+                        onclick="openChat(this, 'Поиск группы [Рейтинг]')"
+                    >
+                        # Поиск группы [Рейтинг]
+                    </li>
+                    <li
+                        class="chat-item"
+                        onclick="openChat(this, 'Торговая площадка')"
+                    >
+                        # Торговая площадка
+                    </li>
+                    <li
+                        class="chat-item"
+                        onclick="openChat(this, 'Кастомные игры')"
+                    >
+                        # Кастомные игры
+                    </li>
+                </ul>
+            </div>
+
+            <div id="main-content">
+                <div id="chat-window">
+                    <div class="chat-header">
+                        <div class="chat-title" id="chat-window-title">
+                            Канал
+                        </div>
+                        <button class="close-chat-btn" onclick="closeChat()">
+                            &times;
+                        </button>
+                    </div>
+
+                    <div class="messages-box" id="messages-container"></div>
+
+                    <div class="input-container">
+                        <input
+                            type="text"
+                            placeholder="Введите сообщение и нажмите Enter..."
+                            autocomplete="off"
+                        />
+                        <button
+                            class="dota-btn"
+                            style="padding: 8px 20px; font-size: 11px"
+                        >
+                            ОТПРАВИТЬ
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div id="profile-modal" class="hidden">
+            <div class="modal-box">
+                <h3>Настройки профиля</h3>
+                <p>
+                    Панель кастомизации и редактирования карточки игрока
+                    находится в разработке.
+                </p>
+                <button class="dota-btn" onclick="closeProfileModal()">
+                    ВЕРНУТЬСЯ
+                </button>
+            </div>
+        </div>
+
+        <script>
+            // Имитация входа
+            function fakeLogin() {
+                const input = document.getElementById("username-input");
+                if (input.value.trim() === "") return;
+
+                document.getElementById("display-name").innerText = input.value;
+
+                const auth = document.getElementById("auth-screen");
+                auth.style.opacity = 0;
+                setTimeout(() => {
+                    auth.classList.add("hidden");
+                    document
+                        .getElementById("chat-layout")
+                        .classList.remove("hidden");
+                }, 300);
+            }
+
+            // Логика выбора чата и анимации выезда снизу
+            function openChat(element, chatName) {
+                // Подсветка активного пункта в сайдбаре
+                document
+                    .querySelectorAll(".chat-item")
+                    .forEach((item) => item.classList.remove("active"));
+                element.classList.add("active");
+
+                // Замена контента
+                document.getElementById("chat-window-title").innerText =
+                    chatName;
+
+                const msgContainer =
+                    document.getElementById("messages-container");
+                msgContainer.innerHTML = `
+                <div class="msg system">Вы вошли в текстовый канал "${chatName}". Удачной игры!</div>
+                <div class="msg"><div class="msg-author">Dendi_Fan</div>Парни, кто пойдет фастом +1 в пати?</div>
+                <div class="msg"><div class="msg-author">Maelstorm_Бот</div>Напоминаем, что спам в каналах хаба запрещен.</div>
+            `;
+
+                // Запуск анимации slide-up
+                document
+                    .getElementById("chat-window")
+                    .classList.add("slide-up");
+            }
+
+            // Закрытие чата (уезжает обратно вниз)
+            function closeChat() {
+                document
+                    .getElementById("chat-window")
+                    .classList.remove("slide-up");
+                document
+                    .querySelectorAll(".chat-item")
+                    .forEach((item) => item.classList.remove("active"));
+            }
+
+            // Модалка профиля
+            function openProfileModal() {
+                document
+                    .getElementById("profile-modal")
+                    .classList.remove("hidden");
+            }
+
+            function closeProfileModal() {
+                document
+                    .getElementById("profile-modal")
+                    .classList.add("hidden");
+            }
+        </script>
+    </body>
+</html>
