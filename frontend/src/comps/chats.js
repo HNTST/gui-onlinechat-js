@@ -51,6 +51,8 @@ function renderMessage(author, text, isSystem) {
 // AppendMessageToUI — рендер сообщения из WebSocket в DOM
 // ============================================================
 
+const seenMessageIds = new Set();
+
 function appendMessageToUI(msg) {
     const container = document.getElementById("messages-container");
     if (!container) {
@@ -59,23 +61,13 @@ function appendMessageToUI(msg) {
     }
     console.log("[UI] appendMessageToUI вызван, msg:", msg);
 
-    // Дедупликация по последнему DOM-элементу
-    const lastMsgEl = container.lastElementChild;
-    if (lastMsgEl && !lastMsgEl.classList.contains("system")) {
-        const lastAuthor =
-            lastMsgEl.querySelector(".msg-author")?.textContent || "";
-        const lastText =
-            lastMsgEl.querySelector(".msg-text")?.textContent || "";
-
-        const authorForDedup =
-            Number(msg.sender_id) === Number(currentUserId)
-                ? currentUsername
-                : userCache[msg.sender_id] || "User #" + msg.sender_id;
-
-        if (lastText === (msg.message || "") && lastAuthor === authorForDedup) {
-            console.log("[UI] Дубликат, пропускаем");
+    // Дедупликация по server ID (если есть — от WS echo)
+    if (msg.id != null) {
+        if (seenMessageIds.has(msg.id)) {
+            console.log("[UI] Дубликат ID, пропускаем", msg.id);
             return;
         }
+        seenMessageIds.add(msg.id);
     }
 
     // Определяем имя отправителя
