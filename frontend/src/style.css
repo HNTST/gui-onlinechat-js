@@ -363,6 +363,12 @@ html {
     color: rgba(255, 255, 255, 0.8);
 }
 
+.msg-time {
+    font-size: 10px;
+    color: #5d6266;
+    margin-top: 4px;
+}
+
 /* Строка ввода в самом низу окна чата */
 .input-container {
     padding: 15px 20px;

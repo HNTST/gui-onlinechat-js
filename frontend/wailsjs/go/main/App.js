@@ -6,10 +6,6 @@ export function AddUsersToChat(arg1, arg2) {
   return window['go']['main']['App']['AddUsersToChat'](arg1, arg2);
 }
 
-export function ConnectWS(arg1) {
-  return window['go']['main']['App']['ConnectWS'](arg1);
-}
-
 export function CreateChat(arg1) {
   return window['go']['main']['App']['CreateChat'](arg1);
 }
@@ -64,10 +60,6 @@ export function RegisterUser(arg1) {
 
 export function SendChatMessage(arg1, arg2) {
   return window['go']['main']['App']['SendChatMessage'](arg1, arg2);
-}
-
-export function SendWSMessage(arg1, arg2, arg3) {
-  return window['go']['main']['App']['SendWSMessage'](arg1, arg2, arg3);
 }
 
 export function UploadAvatar(arg1, arg2, arg3) {

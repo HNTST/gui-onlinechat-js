@@ -6,7 +6,6 @@ import {
     GetUserData,
     SendChatMessage,
 } from "../../wailsjs/go/main/App";
-import { EventsOn } from "../../wailsjs/runtime";
 
 let currentUserId = null;
 let currentUsername = null;
@@ -33,16 +32,19 @@ function closeProfileModal() {
     document.getElementById("profile-modal").classList.add("hidden");
 }
 
-// Рендерит сообщение для истории / системных сообщений
-function renderMessage(author, text, isSystem) {
+function renderMessage(author, text, isSystem, timestamp) {
     const el = document.createElement("div");
     el.className = "msg" + (isSystem ? " system" : "");
     if (isSystem) {
         el.textContent = text;
     } else {
+        const timeStr = timestamp
+            ? new Date(timestamp).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit", second: "2-digit" })
+            : new Date().toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
         el.innerHTML =
             `<div class="msg-author">${author}</div>` +
-            `<div class="msg-text">${text}</div>`;
+            `<div class="msg-text">${text}</div>` +
+            `<div class="msg-time">${timeStr}</div>`;
     }
     return el;
 }
@@ -50,8 +52,6 @@ function renderMessage(author, text, isSystem) {
 // ============================================================
 // AppendMessageToUI — рендер сообщения из WebSocket в DOM
 // ============================================================
-
-const seenMessageIds = new Set();
 
 function appendMessageToUI(msg) {
     const container = document.getElementById("messages-container");
@@ -61,34 +61,46 @@ function appendMessageToUI(msg) {
     }
     console.log("[UI] appendMessageToUI вызван, msg:", msg);
 
-    // Дедупликация по server ID (если есть — от WS echo)
-    if (msg.id != null) {
-        if (seenMessageIds.has(msg.id)) {
-            console.log("[UI] Дубликат ID, пропускаем", msg.id);
-            return;
-        }
-        seenMessageIds.add(msg.id);
-    }
-
-    // Определяем имя отправителя
-    const author =
+    const isOptimistic = (msg.id == null);
+    const newText = msg.message || "";
+    const newAuthor = msg.username || (
         Number(msg.sender_id) === Number(currentUserId)
             ? currentUsername
-            : userCache[msg.sender_id] || "User #" + msg.sender_id;
+            : "Игрок " + msg.sender_id
+    );
 
-    container.appendChild(renderMessage(author, msg.message || "", false));
+    // Дедупликация: сканируем все pending-элементы (наши оптимистичные сообщения, у которых нет id)
+    // Если text + author совпадают — это echo от сервера, убираем флаг и не рендерим
+    if (!isOptimistic) {
+        const pendingEls = container.querySelectorAll(".msg[data-pending]");
+        for (const pel of pendingEls) {
+            const pa = pel.querySelector(".msg-author")?.textContent || "";
+            const pt = pel.querySelector(".msg-text")?.textContent || "";
+            if (pa === newAuthor && pt === newText) {
+                delete pel.dataset.pending;
+                console.log("[UI] Дубликат (echo оптимистичного), пропускаем");
+                return;
+            }
+        }
+    }
+
+    const el = renderMessage(newAuthor, newText, false);
+    if (isOptimistic) {
+        el.dataset.pending = "true";
+    }
+    container.appendChild(el);
     container.scrollTop = container.scrollHeight;
     console.log("[UI] Сообщение добавлено в DOM");
 }
 
 // ============================================================
-// EventsOn — приём сообщений от Go WebSocket bridge
+// EventsOn — приём сообщений от Go через Wails EventsEmit
 // ============================================================
 
 export function initChatEvents() {
-    console.log("[EventsOn] initChatEvents() вызван — регистрируем слушатель 'new_message'");
+    console.log("[EventsOn] initChatEvents() — регистрируем слушатель 'new_message'");
 
-    EventsOn("new_message", (data) => {
+    window.runtime.EventsOn("new_message", (data) => {
         console.log("[EventsOn] Событие 'new_message' получено!");
 
         let msg;
@@ -154,7 +166,7 @@ async function openChatById(
                         ? currentUsername
                         : userCache[msg.sender_id] || "User #" + msg.sender_id;
                 messagesContainer.appendChild(
-                    renderMessage(author, msg.message || "(пусто)", false),
+                    renderMessage(author, msg.message || "(пусто)", false, msg.sent_at),
                 );
             });
         }
@@ -210,6 +222,7 @@ async function refreshChatList(
 }
 
 export function initChats(containerId, userId, username) {
+    initChatEvents();
     const container = document.getElementById(containerId);
     if (!container) return;
 

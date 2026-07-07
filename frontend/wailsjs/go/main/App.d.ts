@@ -4,8 +4,6 @@ import {main} from '../models';
 
 export function AddUsersToChat(arg1:number,arg2:main.AddUserToChatRequest):Promise<main.AddUserToChatResponse>;
 
-export function ConnectWS(arg1:number):Promise<void>;
-
 export function CreateChat(arg1:main.SaveChatRequest):Promise<main.SaveChatResponse>;
 
 export function DeleteChatMessage(arg1:number,arg2:number):Promise<void>;
@@ -33,7 +31,5 @@ export function MarkMessagesAsRead(arg1:number,arg2:number,arg3:main.MarkMessage
 export function RegisterUser(arg1:main.SaveUserRequest):Promise<main.SaveUserResponse>;
 
 export function SendChatMessage(arg1:number,arg2:main.SaveMessageRequest):Promise<void>;
-
-export function SendWSMessage(arg1:number,arg2:number,arg3:string):Promise<void>;
 
 export function UploadAvatar(arg1:number,arg2:string,arg3:Array<number>):Promise<main.UploadAvatarResponse>;

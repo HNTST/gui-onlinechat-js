@@ -1,17 +1,12 @@
 import "./style.css";
 import { Login } from "../wailsjs/go/main/App";
-import { initChats, initChatEvents } from "./comps/chats.js";
+import { initChats } from "./comps/chats.js";
 
-// Флаг-предохранитель: горячая перезагрузка Vite (HMR) переисполняет модуль,
-// но addEventListener не должны навешиваться повторно — иначе Login() вызовется
-// дважды, а initChats() перетрёт DOM, убив старые ссылки на элементы.
 if (window.__mainInitialized) {
     // HMR — ничего не делаем, старые обработчики живы
 } else {
     window.__mainInitialized = true;
 
-    // DOM-ссылки и обработчики — сразу, без ожидания Wails.
-    // Интерфейс должен быть жив в момент загрузки страницы.
     const authScreen = document.getElementById("auth-screen");
     const chatLayout = document.getElementById("chat-layout");
     const loginInput = document.getElementById("login-input");
@@ -30,9 +25,9 @@ if (window.__mainInitialized) {
             const userId = userData.id;
             const displayName = userData.username || username;
 
-            // Бэкенд ответил — мост Wails гарантированно работает.
-            // Регистрируем слушатель событий Wails.
-            initChatEvents();
+            // EventsOn("new_message") регистрируется внутри initChatEvents,
+            // который теперь вызывается из Go-метода startup после входа
+            // (см. app.go → Login → после успешного логина)
 
             authScreen.style.opacity = 0;
             setTimeout(() => {

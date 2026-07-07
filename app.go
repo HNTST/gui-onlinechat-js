@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"context"
-	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -21,11 +20,13 @@ import (
 
 // App struct
 type App struct {
-	ctx        context.Context
-	serverAddr string
-	httpClient *http.Client
-	mu         sync.RWMutex
-	conns      map[int64]*websocket.Conn
+	ctx          context.Context
+	serverAddr   string
+	httpClient   *http.Client
+	wsConn       *websocket.Conn
+	wsMu         sync.Mutex
+	shuttingDown bool
+	userID       int64
 }
 
 // NewApp creates a new App application struct
@@ -33,13 +34,110 @@ func NewApp() *App {
 	return &App{
 		serverAddr: "https://hntgolang.duckdns.org",
 		httpClient: &http.Client{},
-		conns:      make(map[int64]*websocket.Conn),
 	}
 }
 
-// startup is called when the app starts
+// startup is called when the app starts — Wails lifecycle
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
+	log.Printf("[App] Запуск приложения, контекст сохранён")
+}
+
+// shutdown is called when the app exits — Wails lifecycle
+func (a *App) shutdown(ctx context.Context) {
+	log.Printf("[App] Завершение приложения, закрытие WebSocket...")
+	a.shuttingDown = true
+	a.closeWS()
+}
+
+// closeWS — безопасно закрывает WebSocket-соединение
+func (a *App) closeWS() {
+	a.wsMu.Lock()
+	defer a.wsMu.Unlock()
+	if a.wsConn != nil {
+		a.wsConn.Close()
+		a.wsConn = nil
+		log.Printf("[WS] Соединение закрыто")
+	}
+}
+
+// connectWS — устанавливает соединение с внешним WebSocket-сервером
+func (a *App) connectWS(userID int64) error {
+	serverURL, _ := url.Parse(a.serverAddr)
+	wsURL := url.URL{
+		Scheme: "wss",
+		Host:   serverURL.Host,
+		Path:   "/api/v2/ws",
+		RawQuery: url.Values{
+			"user_id": {strconv.FormatInt(userID, 10)},
+		}.Encode(),
+	}
+
+	log.Printf("[WS] Подключение к %s", wsURL.String())
+
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL.String(), nil)
+	if err != nil {
+		return fmt.Errorf("WebSocket dial error: %w", err)
+	}
+
+	a.wsMu.Lock()
+	a.wsConn = conn
+	a.wsMu.Unlock()
+
+	log.Printf("[WS] Успешное подключение к %s", wsURL.Host+wsURL.Path)
+	return nil
+}
+
+// wsReadLoop — бесконечный цикл чтения сообщений из WebSocket
+func (a *App) wsReadLoop() {
+	a.wsMu.Lock()
+	conn := a.wsConn
+	a.wsMu.Unlock()
+
+	if conn == nil {
+		log.Printf("[WS] Нет активного соединения для чтения")
+		return
+	}
+
+	defer func() {
+		log.Printf("[WS] Цикл чтения завершён, очистка...")
+		a.closeWS()
+		if !a.shuttingDown {
+			a.reconnect()
+		}
+	}()
+
+	for {
+		_, data, err := conn.ReadMessage()
+		if err != nil {
+			log.Printf("[WS ERROR] Ошибка чтения: %v", err)
+			return
+		}
+		log.Printf("[WS RECEIVED] %s", string(data))
+		runtime.EventsEmit(a.ctx, "new_message", string(data))
+	}
+}
+
+// reconnect — переподключение с таймаутом после разрыва соединения
+func (a *App) reconnect() {
+	for {
+		if a.shuttingDown {
+			log.Printf("[WS] Выход — пропускаем переподключение")
+			return
+		}
+		log.Printf("[WS] Переподключение через 3 секунды...")
+		time.Sleep(3 * time.Second)
+		if a.shuttingDown {
+			log.Printf("[WS] Выход — пропускаем переподключение")
+			return
+		}
+		if err := a.connectWS(a.userID); err != nil {
+			log.Printf("[WS] Ошибка переподключения: %v", err)
+			continue
+		}
+		log.Printf("[WS] Переподключение успешно, запуск цикла чтения")
+		a.wsReadLoop()
+	}
 }
 
 // Greet returns a greeting for the given name
@@ -280,7 +378,7 @@ func (a *App) GetChatMessages(chatID int64, lastMessageID *int64, limit *int) (*
 	return &resp, nil
 }
 
-// 6. SendChatMessage — отправка сообщения (HTTP POST + запись в WS для broadcast)
+// 6. SendChatMessage — отправка сообщения через HTTP POST + WS для broadcast
 func (a *App) SendChatMessage(chatID int64, req SaveMessageRequest) error {
 	log.Printf("[Go Send Debug] Фронтенд вызвал отправку. Текст: %s, Чат: %d, Отправитель: %d",
 		req.Message, chatID, req.SenderID)
@@ -293,21 +391,22 @@ func (a *App) SendChatMessage(chatID int64, req SaveMessageRequest) error {
 	}
 	log.Printf("[Go Send OK] HTTP POST успешен для чата %d", chatID)
 
-	// 2. Пишем в постоянный WebSocket, чтобы сервер сделал broadcast
-	a.mu.RLock()
-	conn := a.conns[int64(req.SenderID)]
-	a.mu.RUnlock()
+	// 2. Пишем в WebSocket, чтобы сервер разослал всем участникам
+	a.wsMu.Lock()
+	conn := a.wsConn
+	a.wsMu.Unlock()
+
 	if conn != nil {
-		msg := IncomingMessage{
-			Message:  req.Message,
-			ChatID:   chatID,
-			SenderID: int64(req.SenderID),
+		wsMsg := map[string]interface{}{
+			"message":   req.Message,
+			"chat_id":   chatID,
+			"sender_id": req.SenderID,
 		}
-		data, _ := json.Marshal(msg)
+		data, _ := json.Marshal(wsMsg)
 		if err := conn.WriteMessage(websocket.TextMessage, data); err != nil {
 			log.Printf("[Go Send WS WARN] Ошибка записи в WS: %v", err)
 		} else {
-			log.Printf("[Go Send WS OK] Сообщение отправлено в WS")
+			log.Printf("[Go Send WS OK] Сообщение отправлено в WS для broadcast")
 		}
 	}
 
@@ -404,7 +503,6 @@ func (a *App) UploadAvatar(userID int64, fileName string, fileData []byte) (*Upl
 }
 
 // 14. GetAvatar — получение бинарного потока аватара (GET /api/v2/user/avatar?id=)
-// Возвращает []byte для передачи на фронтенд (например, в data URI)
 func (a *App) GetAvatar(avatarID int64) ([]byte, error) {
 	query := url.Values{"id": {strconv.FormatInt(avatarID, 10)}}
 	u, _ := url.Parse(a.serverAddr + "/api/v2/user/avatar")
@@ -429,14 +527,10 @@ func (a *App) GetAvatar(avatarID int64) ([]byte, error) {
 }
 
 // ============================================================
-// Логика входа (регистрация + авто-логин + WebSocket)
+// Логика входа + запуск WebSocket
 // ============================================================
 
-// Login реализует идемпотентный вход: сначала проверяет существование
-// пользователя через GET /api/v2/user_id, и только если пользователь
-// не найден — создаёт нового через POST /api/v2/user.
-// WebSocket подключается асинхронно (в горутине), чтобы не блокировать
-// вход при недоступности WS-сервера.
+// Login реализует идемпотентный вход и запускает WebSocket-соединение
 func (a *App) Login(username string) (*GetUserResponse, error) {
 	idResp, err := a.GetUserID(username)
 	if err == nil {
@@ -444,7 +538,8 @@ func (a *App) Login(username string) (*GetUserResponse, error) {
 		if err != nil {
 			return nil, fmt.Errorf("ошибка получения данных пользователя: %w", err)
 		}
-		go a.ConnectWS(int64(userData.ID))
+		a.userID = int64(userData.ID)
+		go a.startWS()
 		return userData, nil
 	}
 
@@ -458,134 +553,17 @@ func (a *App) Login(username string) (*GetUserResponse, error) {
 		return nil, fmt.Errorf("ошибка получения данных нового пользователя: %w", err)
 	}
 
-	go a.wsReconnectLoop(int64(userData.ID))
+	a.userID = int64(userData.ID)
+	go a.startWS()
 	return userData, nil
 }
 
-// ============================================================
-// WebSocket bridge (Go → Frontend via runtime.EventsEmit)
-// ============================================================
-
-// IncomingMessage — формат сообщения для отправки во внешний WebSocket.
-type IncomingMessage struct {
-	Message  string `json:"message"`
-	ChatID   int64  `json:"chat_id"`
-	SenderID int64  `json:"sender_id"`
-}
-
-// SendWSMessage отправляет сообщение во внешний WebSocket.
-func (a *App) SendWSMessage(chatID, senderID int64, message string) error {
-	a.mu.RLock()
-	conn, ok := a.conns[senderID]
-	a.mu.RUnlock()
-
-	if !ok {
-		return fmt.Errorf("WebSocket не подключён для user_id=%d", senderID)
+// startWS — запускает подключение к WS и цикл чтения в горутине
+func (a *App) startWS() {
+	if err := a.connectWS(a.userID); err != nil {
+		log.Printf("[WS] Начальное подключение не удалось: %v", err)
+		a.reconnect()
+		return
 	}
-
-	msg := IncomingMessage{
-		Message:  message,
-		ChatID:   chatID,
-		SenderID: senderID,
-	}
-
-	data, err := json.Marshal(msg)
-	if err != nil {
-		return fmt.Errorf("ошибка сериализации: %w", err)
-	}
-
-	if err := conn.WriteMessage(websocket.TextMessage, data); err != nil {
-		return fmt.Errorf("ошибка записи в WebSocket: %w", err)
-	}
-	return nil
-}
-
-// ConnectWS подключается к внешнему WebSocket и транслирует сообщения
-// на фронтенд через Wails EventsOn/EventsEmit.
-func (a *App) ConnectWS(userID int64) error {
-	serverURL, _ := url.Parse(a.serverAddr)
-	wsURL := url.URL{
-		Scheme: "wss",
-		Host:   serverURL.Host,
-		Path:   "/api/v2/ws",
-		RawQuery: url.Values{
-			"user_id": {strconv.FormatInt(userID, 10)},
-		}.Encode(),
-	}
-
-	log.Printf("[WS] Попытка подключения к %s", wsURL.Host+wsURL.Path)
-
-	dialer := &websocket.Dialer{
-		TLSClientConfig: &tls.Config{
-			InsecureSkipVerify: true,
-			NextProtos:         []string{"http/1.1"},
-		},
-	}
-	conn, _, err := dialer.Dial(wsURL.String(), http.Header{
-		"Origin": []string{"https://hntgolang.duckdns.org"},
-	})
-	if err != nil {
-		log.Printf("[WS ERROR] Не удалось подключиться к внешнему сокету: %v", err)
-		return fmt.Errorf("WebSocket dial error: %w", err)
-	}
-	log.Printf("[WS] Успешное подключение к %s", wsURL.Host+wsURL.Path)
-
-	// Закрываем только предыдущее соединение этого же user_id, если было
-	a.mu.Lock()
-	if old := a.conns[userID]; old != nil {
-		old.Close()
-	}
-	a.conns[userID] = conn
-	a.mu.Unlock()
-
-	go a.wsReadLoop(conn, userID)
-	return nil
-}
-
-// wsReadLoop читает сообщения из внешнего WebSocket и отправляет их
-// на фронтенд через EventsEmit("new_message", jsonString).
-// При разрыве соединения просто завершается — переподключением занимается wsReconnectLoop.
-func (a *App) wsReadLoop(conn *websocket.Conn, userID int64) {
-	log.Printf("[Go WS] Запущена горутина чтения для пользователя ID: %d", userID)
-
-	defer func() {
-		conn.Close()
-		a.mu.Lock()
-		if a.conns[userID] == conn {
-			delete(a.conns, userID)
-		}
-		a.mu.Unlock()
-		log.Printf("[Go WS] Соединение для user_id=%d закрыто", userID)
-	}()
-
-	for {
-		_, message, err := conn.ReadMessage()
-		if err != nil {
-			log.Printf("[Go WS ERROR] Ошибка чтения для юзера %d: %v", userID, err)
-			return
-		}
-		log.Printf("[Go WS RECEIVED] Пришли сырые данные из API: %s", string(message))
-
-		if a.ctx == nil {
-			log.Printf("[Go Wails ERROR] a.ctx == nil! Невозможно отправить событие для user_id=%d", userID)
-			continue
-		}
-		log.Printf("[Go Wails Emit] Отправляем событие 'new_message' во фронтенд для чата: %s", string(message))
-		runtime.EventsEmit(a.ctx, "new_message", string(message))
-	}
-}
-
-// wsReconnectLoop бесконечно переподключается к внешнему WebSocket.
-// Живёт в отдельной горутине, запущенной из Login().
-func (a *App) wsReconnectLoop(userID int64) {
-	for {
-		err := a.ConnectWS(userID)
-		if err != nil {
-			log.Printf("[Go WS] Ошибка подключения для user_id=%d, повтор через 3с: %v", userID, err)
-		} else {
-			log.Printf("[Go WS] Подключение для user_id=%d установлено, ждём разрыва", userID)
-		}
-		// ConnectWS запускает wsReadLoop в горутине; ждём, пока она умрёт
-		time.Sleep(3 * time.Second)
-	}
+	a.wsReadLoop()
 }
