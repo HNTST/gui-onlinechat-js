@@ -25,15 +25,11 @@ if (window.__mainInitialized) {
             const userId = userData.id;
             const displayName = userData.username || username;
 
-            // EventsOn("new_message") регистрируется внутри initChatEvents,
-            // который теперь вызывается из Go-метода startup после входа
-            // (см. app.go → Login → после успешного логина)
-
             authScreen.style.opacity = 0;
             setTimeout(() => {
                 authScreen.classList.add("hidden");
                 chatLayout.classList.remove("hidden");
-                initChats("chat-layout", userId, displayName);
+                initChats("chat-layout", userId, displayName, userData);
             }, 300);
         } catch (err) {
             loginError.textContent = "Ошибка: " + (err.message || err);

@@ -380,18 +380,6 @@ func (a *App) GetChatMessages(chatID int64, lastMessageID *int64, limit *int) (*
 
 // 6. SendChatMessage — отправка сообщения через HTTP POST + WS для broadcast
 func (a *App) SendChatMessage(chatID int64, req SaveMessageRequest) error {
-	log.Printf("[Go Send Debug] Фронтенд вызвал отправку. Текст: %s, Чат: %d, Отправитель: %d",
-		req.Message, chatID, req.SenderID)
-
-	// 1. Сохраняем в БД через HTTP POST
-	path := fmt.Sprintf("/api/v2/chats/%d/messages", chatID)
-	if err := a.doRequest(http.MethodPost, path, nil, req, nil); err != nil {
-		log.Printf("[Go Send ERROR] Ошибка HTTP POST: %v", err)
-		return fmt.Errorf("HTTP POST error: %w", err)
-	}
-	log.Printf("[Go Send OK] HTTP POST успешен для чата %d", chatID)
-
-	// 2. Пишем в WebSocket, чтобы сервер разослал всем участникам
 	a.wsMu.Lock()
 	conn := a.wsConn
 	a.wsMu.Unlock()
@@ -405,8 +393,6 @@ func (a *App) SendChatMessage(chatID int64, req SaveMessageRequest) error {
 		data, _ := json.Marshal(wsMsg)
 		if err := conn.WriteMessage(websocket.TextMessage, data); err != nil {
 			log.Printf("[Go Send WS WARN] Ошибка записи в WS: %v", err)
-		} else {
-			log.Printf("[Go Send WS OK] Сообщение отправлено в WS для broadcast")
 		}
 	}
 
