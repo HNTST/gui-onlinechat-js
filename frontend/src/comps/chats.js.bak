@@ -1,0 +1,523 @@
+import {
+    GetUserChats,
+    GetChatMessages,
+    CreateChat,
+    GetUserID,
+    GetUserData,
+    GetChatMembers,
+    SendChatMessage,
+} from "../../wailsjs/go/main/App";
+
+let currentUserId = null;
+let currentUsername = null;
+let currentChatId = null;
+
+window.userProfilesCache = {};
+
+const AVATAR_STUB =
+    "data:image/svg+xml," +
+    encodeURIComponent(
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">' +
+            '<rect width="32" height="32" fill="#2a2c30"/>' +
+            '<circle cx="16" cy="11" r="6" fill="#555"/>' +
+            '<path d="M5 32c0-6 4.9-11 11-11s11 5 11 11" fill="#555"/>' +
+            "</svg>",
+    );
+
+function ensureProfile(userId) {
+    if (window.userProfilesCache[userId]) {
+        return Promise.resolve(window.userProfilesCache[userId]);
+    }
+    return GetUserData(userId)
+        .then((data) => {
+            window.userProfilesCache[userId] = data;
+            return data;
+        })
+        .catch(() => {
+            window.userProfilesCache[userId] = {
+                id: userId,
+                username: "User #" + userId,
+                avatar_id: null,
+                reg: "",
+            };
+            return window.userProfilesCache[userId];
+        });
+}
+
+function resolveUsername(userId) {
+    if (userId === currentUserId) return Promise.resolve(currentUsername);
+    if (window.userProfilesCache[userId]) {
+        return Promise.resolve(window.userProfilesCache[userId].username);
+    }
+    return ensureProfile(userId).then((p) => p.username);
+}
+
+function resolveAuthor(senderId, msg) {
+    if (msg && msg.username) return msg.username;
+    if (Number(senderId) === Number(currentUserId)) return currentUsername;
+    const cached = window.userProfilesCache[senderId];
+    if (cached && cached.username) return cached.username;
+    return "Игрок " + senderId;
+}
+
+function openUserProfile(userId) {
+    const modal = document.getElementById("profile-modal");
+    const box = modal.querySelector(".modal-box");
+
+    box.innerHTML = `
+        <div class="profile-modal-avatar">
+            <img src="${AVATAR_STUB}" class="profile-modal-img" id="modal-avatar" alt="avatar">
+        </div>
+        <h3 id="modal-nickname">Загрузка...</h3>
+        <div class="profile-modal-id">ID: ${userId}</div>
+        <div class="profile-modal-reg" id="modal-reg"></div>
+        <button class="dota-btn modal-close-btn" id="modal-close-btn">ЗАКРЫТЬ</button>
+    `;
+    modal.classList.remove("hidden");
+
+    ensureProfile(userId).then((profile) => {
+        const nickEl = document.getElementById("modal-nickname");
+        const regEl = document.getElementById("modal-reg");
+        const avatarEl = document.getElementById("modal-avatar");
+        if (nickEl) nickEl.textContent = profile.username || "User #" + userId;
+        if (regEl && profile.reg) {
+            regEl.textContent =
+                "Регистрация: " +
+                new Date(profile.reg).toLocaleDateString("ru-RU");
+        }
+        if (avatarEl && profile.avatar_id) {
+            avatarEl.src =
+                "https://hntgolang.duckdns.org/api/v2/user/avatar?id=" +
+                profile.avatar_id;
+        }
+    });
+}
+
+function closeProfileModal() {
+    document.getElementById("profile-modal").classList.add("hidden");
+}
+
+function renderMessage(author, text, isSystem, timestamp, senderId) {
+    const el = document.createElement("div");
+    el.className = "msg" + (isSystem ? " system" : "");
+
+    if (isSystem) {
+        el.textContent = text;
+        return el;
+    }
+
+    const timeStr = timestamp
+        ? new Date(timestamp).toLocaleTimeString("ru-RU", {
+              hour: "2-digit",
+              minute: "2-digit",
+              second: "2-digit",
+          })
+        : new Date().toLocaleTimeString("ru-RU", {
+              hour: "2-digit",
+              minute: "2-digit",
+              second: "2-digit",
+          });
+
+    const pid = Number(senderId);
+    el.dataset.senderId = pid;
+
+    el.innerHTML =
+        `<div class="msg-author" data-sender-id="${pid}">${author}</div>` +
+        `<div class="msg-text">${text}</div>` +
+        `<div class="msg-time">${timeStr}</div>`;
+
+    return el;
+}
+
+// ============================================================
+// AppendMessageToUI — рендер сообщения из WS/оптимизма в DOM
+// ============================================================
+
+function appendMessageToUI(msg) {
+    const container = document.getElementById("messages-container");
+    if (!container) {
+        console.error("[UI] #messages-container НЕ НАЙДЕН в DOM!");
+        return;
+    }
+    console.log("[UI] appendMessageToUI вызван, msg:", msg);
+
+    const isOptimistic = msg.id == null;
+    const senderId = Number(msg.sender_id);
+    const newText = msg.message || "";
+
+    if (!isOptimistic) {
+        const pendingEls = container.querySelectorAll(".msg[data-pending]");
+        for (const pel of pendingEls) {
+            const pa = pel.querySelector(".msg-author")?.textContent || "";
+            const pt = pel.querySelector(".msg-text")?.textContent || "";
+            const ps = pel.dataset.senderId;
+            if (
+                String(ps) === String(senderId) &&
+                pa === resolveAuthor(senderId, msg) &&
+                pt === newText
+            ) {
+                delete pel.dataset.pending;
+                console.log("[UI] Дубликат (echo оптимистичного), пропускаем");
+                return;
+            }
+        }
+    }
+
+    const author = resolveAuthor(senderId, msg);
+    const el = renderMessage(author, newText, false, null, senderId);
+    if (isOptimistic) el.dataset.pending = "true";
+
+    container.appendChild(el);
+    container.scrollTop = container.scrollHeight;
+    console.log("[UI] Сообщение добавлено в DOM");
+}
+
+// ============================================================
+// EventsOn — приём сообщений от Go через Wails EventsEmit
+// ============================================================
+
+export function initChatEvents() {
+    console.log(
+        "[EventsOn] initChatEvents() — регистрируем слушатель 'new_message'",
+    );
+
+    window.runtime.EventsOn("new_message", (data) => {
+        console.log("[EventsOn] Событие 'new_message' получено!");
+
+        let msg;
+        if (typeof data === "string") {
+            try {
+                msg = JSON.parse(data);
+            } catch (e) {
+                console.error("[EventsOn] JSON.parse ошибка:", e.toString());
+                return;
+            }
+        } else {
+            msg = data;
+        }
+
+        if (Number(msg.chat_id) === Number(window.currentOpenChatId)) {
+            appendMessageToUI(msg);
+        }
+    });
+}
+
+// ============================================================
+// Чат
+// ============================================================
+
+async function openChatById(
+    chatId,
+    chatName,
+    listEl,
+    chatWindow,
+    titleEl,
+    messagesContainer,
+) {
+    listEl
+        .querySelectorAll(".chat-item")
+        .forEach((el) => el.classList.remove("active"));
+    const targetLi = listEl.querySelector(`[data-chat-id="${chatId}"]`);
+    if (targetLi) targetLi.classList.add("active");
+
+    currentChatId = chatId;
+    window.currentOpenChatId = chatId;
+
+    // Сбрасываем аватар в заголовке до загрузки
+    const chatAvatar = document.getElementById("chat-avatar");
+    if (chatAvatar) chatAvatar.src = AVATAR_STUB;
+
+    titleEl.textContent = chatName || "Чат #" + chatId;
+    messagesContainer.innerHTML = "";
+
+    messagesContainer.appendChild(
+        renderMessage(
+            null,
+            `Вы вошли в текстовой канал "${chatName || "Чат #" + chatId}". Удачной игры!`,
+            true,
+        ),
+    );
+
+    try {
+        const msgResp = await GetChatMessages(chatId, null, null);
+        if (msgResp.messages) {
+            const uniqueIds = [
+                ...new Set(msgResp.messages.map((m) => m.sender_id)),
+            ];
+            await Promise.all(uniqueIds.map((id) => ensureProfile(id)));
+
+            msgResp.messages.forEach((msg) => {
+                const author = resolveAuthor(msg.sender_id, msg);
+                messagesContainer.appendChild(
+                    renderMessage(
+                        author,
+                        msg.message || "(пусто)",
+                        false,
+                        msg.sent_at,
+                        msg.sender_id,
+                    ),
+                );
+            });
+        }
+        messagesContainer.scrollTop = messagesContainer.scrollHeight;
+    } catch (err) {
+        console.error("Ошибка загрузки сообщений:", err);
+    }
+
+    // Подгружаем участников и показываем аватар собеседника в заголовке
+    try {
+        const membersResp = await GetChatMembers(chatId);
+        const otherId = (membersResp.members || []).find(
+            (m) => Number(m) !== Number(currentUserId),
+        );
+        if (otherId) {
+            const profile = await ensureProfile(Number(otherId));
+            if (chatAvatar && profile && profile.avatar_id) {
+                chatAvatar.src =
+                    "https://hntgolang.duckdns.org/api/v2/user/avatar?id=" +
+                    profile.avatar_id;
+            }
+        }
+    } catch (_e) {
+        // Не показываем аватар, если не удалось получить участников
+    }
+
+    chatWindow.classList.add("slide-up");
+}
+
+async function refreshChatList(
+    listEl,
+    chatWindow,
+    titleEl,
+    messagesContainer,
+    afterChatId,
+) {
+    try {
+        const resp = await GetUserChats(currentUserId);
+        listEl.innerHTML = "";
+
+        if (!resp.chats || resp.chats.length === 0) {
+            listEl.innerHTML =
+                '<li style="padding: 20px; text-align: center; color: #5d6266;">Нет доступных чатов</li>';
+            return;
+        }
+
+        resp.chats.forEach((chat) => {
+            const li = document.createElement("li");
+            li.className = "chat-item";
+            li.textContent = "# " + (chat.name || "Чат #" + chat.id);
+            li.dataset.chatId = chat.id;
+
+            li.addEventListener("click", () => {
+                openChatById(
+                    chat.id,
+                    chat.name,
+                    listEl,
+                    chatWindow,
+                    titleEl,
+                    messagesContainer,
+                );
+            });
+
+            listEl.appendChild(li);
+        });
+    } catch (err) {
+        console.error("Ошибка загрузки чатов:", err);
+        listEl.innerHTML =
+            '<li style="padding: 20px; text-align: center; color: #c0392b;">Ошибка загрузки чатов</li>';
+    }
+}
+
+export function initChats(containerId, userId, username, userData) {
+    initChatEvents();
+
+    window.userProfilesCache[userId] = {
+        id: userId,
+        username: username,
+        avatar_id: userData && userData.avatar_id ? userData.avatar_id : null,
+        reg: (userData && userData.reg) || "",
+    };
+
+    const container = document.getElementById(containerId);
+    if (!container) return;
+
+    currentUserId = userId;
+    currentUsername = username;
+
+    container.innerHTML = `
+        <div id="sidebar">
+            <div class="profile-card" id="profile-card">
+                <img class="sidebar-avatar" id="sidebar-avatar" src="${AVATAR_STUB}" alt="avatar">
+                <div class="profile-info">
+                    <div class="profile-name" id="display-name">${username}</div>
+                    <div class="profile-status">В главном меню</div>
+                </div>
+            </div>
+
+            <div class="search-container">
+                <input
+                    type="text"
+                    class="search-input"
+                    id="search-input"
+                    placeholder="Найти человека или канал..."
+                    autocomplete="off"
+                />
+            </div>
+
+            <div class="sidebar-category-title">Ваши чаты</div>
+            <ul class="chats-list" id="chats-list">
+                <li style="padding: 20px; text-align: center; color: #5d6266;">Загрузка...</li>
+            </ul>
+        </div>
+
+        <div id="main-content">
+            <div id="chat-window">
+                <div class="chat-header">
+                    <div class="chat-header-info">
+                        <img class="chat-avatar" id="chat-avatar" src="${AVATAR_STUB}" alt="">
+                        <div class="chat-title" id="chat-window-title">Канал</div>
+                    </div>
+                    <button class="close-chat-btn" id="close-chat-btn">&times;</button>
+                </div>
+
+                <div class="messages-box" id="messages-container"></div>
+
+                <div class="input-container">
+                    <input
+                        type="text"
+                        id="msg-input"
+                        placeholder="Введите сообщение и нажмите Enter..."
+                        autocomplete="off"
+                    />
+                    <button class="dota-btn" id="msg-send-btn" style="padding: 8px 20px; font-size: 11px">
+                        ОТПРАВИТЬ
+                    </button>
+                </div>
+            </div>
+        </div>
+    `;
+
+    // Подставляем аватар текущего пользователя в сайдбар
+    const profile = window.userProfilesCache[userId];
+    if (profile && profile.avatar_id) {
+        const sidebarImg = document.getElementById("sidebar-avatar");
+        if (sidebarImg) {
+            sidebarImg.src =
+                "https://hntgolang.duckdns.org/api/v2/user/avatar?id=" +
+                profile.avatar_id;
+        }
+    }
+
+    document
+        .getElementById("profile-card")
+        .addEventListener("click", () => openUserProfile(currentUserId));
+
+    function closeProfileModalHandler(e) {
+        if (e.target === e.currentTarget || e.target.id === "modal-close-btn") {
+            closeProfileModal();
+        }
+    }
+    const profileModal = document.getElementById("profile-modal");
+    profileModal.addEventListener("click", closeProfileModalHandler);
+
+    const listEl = document.getElementById("chats-list");
+    const chatWindow = document.getElementById("chat-window");
+    const titleEl = document.getElementById("chat-window-title");
+    const messagesContainer = document.getElementById("messages-container");
+    const closeBtn = document.getElementById("close-chat-btn");
+    const msgInput = document.getElementById("msg-input");
+    const sendBtn = document.getElementById("msg-send-btn");
+    const searchInput = document.getElementById("search-input");
+
+    messagesContainer.addEventListener("click", (e) => {
+        const authorEl = e.target.closest(".msg-author");
+        if (authorEl && authorEl.dataset.senderId) {
+            openUserProfile(Number(authorEl.dataset.senderId));
+        }
+    });
+
+    function closeChat() {
+        chatWindow.classList.remove("slide-up");
+        listEl
+            .querySelectorAll(".chat-item")
+            .forEach((el) => el.classList.remove("active"));
+        currentChatId = null;
+        window.currentOpenChatId = null;
+    }
+
+    closeBtn.addEventListener("click", closeChat);
+
+    // ============================================================
+    // Отправка сообщения через HTTP POST (Go → внешнее API)
+    // ============================================================
+
+    function sendMessage() {
+        const text = msgInput.value.trim();
+        if (!text || currentChatId === null) return;
+
+        const payload = {
+            message: text,
+            sender_id: Number(currentUserId),
+            chat_id: Number(currentChatId),
+        };
+
+        appendMessageToUI(payload);
+
+        SendChatMessage(Number(currentChatId), payload)
+            .then(() => {
+                console.log("[Send] Сообщение отправлено:", payload);
+            })
+            .catch((err) => {
+                console.error("[Send] Ошибка:", err);
+            });
+
+        msgInput.value = "";
+    }
+
+    sendBtn.addEventListener("click", sendMessage);
+    msgInput.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") sendMessage();
+    });
+
+    searchInput.addEventListener("keydown", async (e) => {
+        if (e.key !== "Enter") return;
+        const query = searchInput.value.trim();
+        if (!query) return;
+
+        searchInput.value = "";
+        searchInput.placeholder = "Поиск...";
+
+        try {
+            const targetUser = await GetUserID(query);
+            const targetUserId = targetUser.user_id;
+
+            const chatResp = await CreateChat({
+                author: currentUserId,
+                chat_name: query,
+                target_user: targetUserId,
+            });
+            const newChatId = chatResp.chat_id;
+
+            await refreshChatList(
+                listEl,
+                chatWindow,
+                titleEl,
+                messagesContainer,
+            );
+            await openChatById(
+                newChatId,
+                query,
+                listEl,
+                chatWindow,
+                titleEl,
+                messagesContainer,
+            );
+        } catch (err) {
+            console.error("Ошибка поиска/создания чата:", err);
+        }
+
+        searchInput.placeholder = "Найти человека или канал...";
+    });
+
+    refreshChatList(listEl, chatWindow, titleEl, messagesContainer);
+}
