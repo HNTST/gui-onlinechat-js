@@ -10,13 +10,23 @@ export function DeleteChatMessage(arg1:number,arg2:number):Promise<void>;
 
 export function EditChatMessage(arg1:number,arg2:number,arg3:main.EditMessageRequest):Promise<void>;
 
+export function FindOrCreateChat(arg1:string):Promise<main.SaveChatResponse>;
+
 export function GetAvatar(arg1:number):Promise<Array<number>>;
+
+export function GetAvatarBase64(arg1:string):Promise<string>;
+
+export function GetChatHistory(arg1:number,arg2:any,arg3:any):Promise<main.ChatHistoryResponse>;
 
 export function GetChatMembers(arg1:number):Promise<main.GetChatMembersResponse>;
 
 export function GetChatMessages(arg1:number,arg2:any,arg3:any):Promise<main.GetChatMessagesResponse>;
 
-export function GetUserChats(arg1:number):Promise<main.GetUserChatsExtendedResponse>;
+export function GetChatsWithProfiles():Promise<main.ChatsWithProfilesResponse>;
+
+export function GetSelfData():Promise<main.GetUserResponse>;
+
+export function GetUserChats():Promise<main.GetUserChatsExtendedResponse>;
 
 export function GetUserData(arg1:number):Promise<main.GetUserResponse>;
 
@@ -24,12 +34,16 @@ export function GetUserID(arg1:string):Promise<main.GetUserIDResponse>;
 
 export function Greet(arg1:string):Promise<string>;
 
-export function Login(arg1:string):Promise<main.GetUserResponse>;
+export function Login(arg1:string,arg2:string):Promise<main.GetUserResponse>;
 
-export function MarkMessagesAsRead(arg1:number,arg2:number,arg3:main.MarkMessagesAsReadRequest):Promise<void>;
+export function Logout():Promise<void>;
+
+export function MarkMessagesAsRead(arg1:number,arg2:main.MarkMessagesAsReadRequest):Promise<void>;
+
+export function Register(arg1:string,arg2:string):Promise<main.GetUserResponse>;
 
 export function RegisterUser(arg1:main.SaveUserRequest):Promise<main.SaveUserResponse>;
 
 export function SendChatMessage(arg1:number,arg2:main.SaveMessageRequest):Promise<void>;
 
-export function UploadAvatar(arg1:number,arg2:string,arg3:Array<number>):Promise<main.UploadAvatarResponse>;
+export function UploadAvatar(arg1:string,arg2:Array<number>):Promise<main.UploadAvatarResponse>;

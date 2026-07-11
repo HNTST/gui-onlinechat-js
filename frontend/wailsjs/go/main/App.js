@@ -18,8 +18,20 @@ export function EditChatMessage(arg1, arg2, arg3) {
   return window['go']['main']['App']['EditChatMessage'](arg1, arg2, arg3);
 }
 
+export function FindOrCreateChat(arg1) {
+  return window['go']['main']['App']['FindOrCreateChat'](arg1);
+}
+
 export function GetAvatar(arg1) {
   return window['go']['main']['App']['GetAvatar'](arg1);
+}
+
+export function GetAvatarBase64(arg1) {
+  return window['go']['main']['App']['GetAvatarBase64'](arg1);
+}
+
+export function GetChatHistory(arg1, arg2, arg3) {
+  return window['go']['main']['App']['GetChatHistory'](arg1, arg2, arg3);
 }
 
 export function GetChatMembers(arg1) {
@@ -30,8 +42,16 @@ export function GetChatMessages(arg1, arg2, arg3) {
   return window['go']['main']['App']['GetChatMessages'](arg1, arg2, arg3);
 }
 
-export function GetUserChats(arg1) {
-  return window['go']['main']['App']['GetUserChats'](arg1);
+export function GetChatsWithProfiles() {
+  return window['go']['main']['App']['GetChatsWithProfiles']();
+}
+
+export function GetSelfData() {
+  return window['go']['main']['App']['GetSelfData']();
+}
+
+export function GetUserChats() {
+  return window['go']['main']['App']['GetUserChats']();
 }
 
 export function GetUserData(arg1) {
@@ -46,12 +66,20 @@ export function Greet(arg1) {
   return window['go']['main']['App']['Greet'](arg1);
 }
 
-export function Login(arg1) {
-  return window['go']['main']['App']['Login'](arg1);
+export function Login(arg1, arg2) {
+  return window['go']['main']['App']['Login'](arg1, arg2);
 }
 
-export function MarkMessagesAsRead(arg1, arg2, arg3) {
-  return window['go']['main']['App']['MarkMessagesAsRead'](arg1, arg2, arg3);
+export function Logout() {
+  return window['go']['main']['App']['Logout']();
+}
+
+export function MarkMessagesAsRead(arg1, arg2) {
+  return window['go']['main']['App']['MarkMessagesAsRead'](arg1, arg2);
+}
+
+export function Register(arg1, arg2) {
+  return window['go']['main']['App']['Register'](arg1, arg2);
 }
 
 export function RegisterUser(arg1) {
@@ -62,6 +90,6 @@ export function SendChatMessage(arg1, arg2) {
   return window['go']['main']['App']['SendChatMessage'](arg1, arg2);
 }
 
-export function UploadAvatar(arg1, arg2, arg3) {
-  return window['go']['main']['App']['UploadAvatar'](arg1, arg2, arg3);
+export function UploadAvatar(arg1, arg2) {
+  return window['go']['main']['App']['UploadAvatar'](arg1, arg2);
 }

@@ -82,28 +82,22 @@ export namespace main {
 		    return a;
 		}
 	}
-	export class EditMessageRequest {
-	    text: string;
+	export class GetUserResponse {
+	    id: number;
+	    username: string;
+	    avatar_id?: number;
+	    reg?: string;
 	
 	    static createFrom(source: any = {}) {
-	        return new EditMessageRequest(source);
+	        return new GetUserResponse(source);
 	    }
 	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.text = source["text"];
-	    }
-	}
-	export class GetChatMembersResponse {
-	    members: number[];
-	
-	    static createFrom(source: any = {}) {
-	        return new GetChatMembersResponse(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.members = source["members"];
+	        this.id = source["id"];
+	        this.username = source["username"];
+	        this.avatar_id = source["avatar_id"];
+	        this.reg = source["reg"];
 	    }
 	}
 	export class MessageDTO {
@@ -128,6 +122,124 @@ export namespace main {
 	        this.is_read = source["is_read"];
 	        this.is_edited = source["is_edited"];
 	        this.is_deleted = source["is_deleted"];
+	    }
+	}
+	export class ChatHistoryResponse {
+	    messages: MessageDTO[];
+	    profiles: Record<string, GetUserResponse>;
+	
+	    static createFrom(source: any = {}) {
+	        return new ChatHistoryResponse(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.messages = this.convertValues(source["messages"], MessageDTO);
+	        this.profiles = this.convertValues(source["profiles"], GetUserResponse, true);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class ChatWithProfile {
+	    chat: ChatExtendedDTO;
+	    profile?: GetUserResponse;
+	
+	    static createFrom(source: any = {}) {
+	        return new ChatWithProfile(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.chat = this.convertValues(source["chat"], ChatExtendedDTO);
+	        this.profile = this.convertValues(source["profile"], GetUserResponse);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class ChatsWithProfilesResponse {
+	    chats: ChatWithProfile[];
+	
+	    static createFrom(source: any = {}) {
+	        return new ChatsWithProfilesResponse(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.chats = this.convertValues(source["chats"], ChatWithProfile);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class EditMessageRequest {
+	    text: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new EditMessageRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.text = source["text"];
+	    }
+	}
+	export class GetChatMembersResponse {
+	    members: number[];
+	
+	    static createFrom(source: any = {}) {
+	        return new GetChatMembersResponse(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.members = source["members"];
 	    }
 	}
 	export class GetChatMessagesResponse {
@@ -202,24 +314,7 @@ export namespace main {
 	        this.user_id = source["user_id"];
 	    }
 	}
-	export class GetUserResponse {
-	    id: number;
-	    username: string;
-	    avatar_id: number;
-	    reg: string;
 	
-	    static createFrom(source: any = {}) {
-	        return new GetUserResponse(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.id = source["id"];
-	        this.username = source["username"];
-	        this.avatar_id = source["avatar_id"];
-	        this.reg = source["reg"];
-	    }
-	}
 	
 	export class MarkMessagesAsReadRequest {
 	    last_read_message_id: number;
@@ -238,6 +333,7 @@ export namespace main {
 	    author: number;
 	    chat_name: string;
 	    target_user: number;
+	    is_group?: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new SaveChatRequest(source);
@@ -248,6 +344,7 @@ export namespace main {
 	        this.author = source["author"];
 	        this.chat_name = source["chat_name"];
 	        this.target_user = source["target_user"];
+	        this.is_group = source["is_group"];
 	    }
 	}
 	export class SaveChatResponse {
@@ -264,8 +361,6 @@ export namespace main {
 	}
 	export class SaveMessageRequest {
 	    message: string;
-	    sender_id: number;
-	    chat_id: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new SaveMessageRequest(source);
@@ -274,8 +369,6 @@ export namespace main {
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.message = source["message"];
-	        this.sender_id = source["sender_id"];
-	        this.chat_id = source["chat_id"];
 	    }
 	}
 	export class SaveUserRequest {
@@ -295,8 +388,8 @@ export namespace main {
 	export class SaveUserResponse {
 	    id: number;
 	    username: string;
-	    avatar_id: number;
-	    reg: string;
+	    avatar_id?: number;
+	    reg?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new SaveUserResponse(source);

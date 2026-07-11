@@ -1,20 +1,21 @@
 import {
-    GetUserChats,
-    GetChatMessages,
-    CreateChat,
-    GetUserID,
+    GetChatsWithProfiles,
+    GetChatHistory,
+    FindOrCreateChat,
     GetUserData,
+    GetSelfData,
     GetChatMembers,
     SendChatMessage,
-    MarkMessagesAsRead,
     EditChatMessage,
     DeleteChatMessage,
+    GetAvatarBase64,
 } from "../../wailsjs/go/main/App";
 
 let currentUserId = null;
 let currentUsername = null;
 let currentChatId = null;
 
+// Кэш профилей — заполняется из ответов Go-методов
 window.userProfilesCache = {};
 
 const AVATAR_STUB =
@@ -27,41 +28,65 @@ const AVATAR_STUB =
         "</svg>",
     );
 
-function ensureProfile(userId) {
+// ============================================================
+// Утилиты для работы с кэшем профилей
+// ============================================================
+
+// putProfile — сохранить профиль в кэш из ответа Go-метода
+function putProfile(userId, profile) {
+    if (profile) window.userProfilesCache[userId] = profile;
+}
+
+// getCachedProfile — вернуть профиль из кэша (без сетевых вызовов)
+function getCachedProfile(userId) {
+    return window.userProfilesCache[userId] || null;
+}
+
+// loadProfile — загрузить профиль через Go-биндинг, если его нет в кэше
+// Используется только для модального окна профиля (когда нужен произвольный userId)
+function loadProfile(userId) {
     if (window.userProfilesCache[userId]) {
         return Promise.resolve(window.userProfilesCache[userId]);
     }
-    return GetUserData(userId)
+    const fetcher = Number(userId) === Number(currentUserId)
+        ? GetSelfData()
+        : GetUserData(userId);
+
+    return fetcher
         .then((data) => {
             window.userProfilesCache[userId] = data;
             return data;
         })
         .catch(() => {
-            window.userProfilesCache[userId] = {
+            const stub = {
                 id: userId,
                 username: "User #" + userId,
                 avatar_id: null,
                 reg: "",
             };
-            return window.userProfilesCache[userId];
+            window.userProfilesCache[userId] = stub;
+            return stub;
         });
 }
 
-function resolveUsername(userId) {
-    if (userId === currentUserId) return Promise.resolve(currentUsername);
-    if (window.userProfilesCache[userId]) {
-        return Promise.resolve(window.userProfilesCache[userId].username);
-    }
-    return ensureProfile(userId).then((p) => p.username);
+// ============================================================
+// Загрузка аватаров через Go-биндинг (без прямых URL)
+// ============================================================
+
+function loadAvatar(imgEl, avatarId) {
+    if (!imgEl || !avatarId) return;
+    GetAvatarBase64(String(avatarId))
+        .then((b64) => {
+            imgEl.src = "data:image/png;base64," + b64;
+        })
+        .catch(() => {
+            imgEl.src = AVATAR_STUB;
+        });
 }
 
-function resolveAuthor(senderId, msg) {
-    if (msg && msg.username) return msg.username;
-    if (Number(senderId) === Number(currentUserId)) return currentUsername;
-    const cached = window.userProfilesCache[senderId];
-    if (cached && cached.username) return cached.username;
-    return "Игрок " + senderId;
-}
+// ============================================================
+// Модальное окно профиля
+// ============================================================
 
 function openUserProfile(userId) {
     const modal = document.getElementById("profile-modal");
@@ -78,7 +103,8 @@ function openUserProfile(userId) {
     `;
     modal.classList.remove("hidden");
 
-    ensureProfile(userId).then((profile) => {
+    // Для модалки грузим профиль через Go (может быть не в кэше)
+    loadProfile(userId).then((profile) => {
         const nickEl = document.getElementById("modal-nickname");
         const regEl = document.getElementById("modal-reg");
         const avatarEl = document.getElementById("modal-avatar");
@@ -89,9 +115,7 @@ function openUserProfile(userId) {
                 new Date(profile.reg).toLocaleDateString("ru-RU");
         }
         if (avatarEl && profile.avatar_id) {
-            avatarEl.src =
-                "https://hntgolang.duckdns.org/api/v2/user/avatar?id=" +
-                profile.avatar_id;
+            loadAvatar(avatarEl, profile.avatar_id);
         }
     });
 }
@@ -99,6 +123,10 @@ function openUserProfile(userId) {
 function closeProfileModal() {
     document.getElementById("profile-modal").classList.add("hidden");
 }
+
+// ============================================================
+// Рендер сообщений
+// ============================================================
 
 function renderMessage(text, isSystem, timestamp, senderId, messageId, isEdited, isDeleted) {
     const el = document.createElement("div");
@@ -110,8 +138,9 @@ function renderMessage(text, isSystem, timestamp, senderId, messageId, isEdited,
     }
 
     const pid = Number(senderId);
+    const own = pid === Number(currentUserId);
 
-    if (pid === Number(currentUserId)) {
+    if (own) {
         el.classList.add("msg-own");
     }
 
@@ -152,7 +181,7 @@ function renderMessage(text, isSystem, timestamp, senderId, messageId, isEdited,
     el.appendChild(textDiv);
     el.appendChild(timeDiv);
 
-    if (pid === Number(currentUserId) && messageId != null) {
+    if (own && messageId != null) {
         const actions = document.createElement("div");
         actions.className = "msg-actions";
         actions.innerHTML =
@@ -164,37 +193,32 @@ function renderMessage(text, isSystem, timestamp, senderId, messageId, isEdited,
     return el;
 }
 
-
-
 // ============================================================
-// AppendMessageToUI — рендер сообщения из WS/оптимизма в DOM
+// AppendMessageToUI — рендер сообщения из WS в DOM
 // ============================================================
 
 function appendMessageToUI(msg) {
     const container = document.getElementById("messages-container");
-    if (!container) {
-        console.error("[UI] #messages-container НЕ НАЙДЕН в DOM!");
-        return;
+    if (!container) return;
+
+    if (msg.id != null) {
+        const exists = container.querySelector(
+            `.msg[data-msg-id="${msg.id}"][data-sent-at="${msg.sent_at}"][data-sender-id="${msg.sender_id}"]`,
+        );
+        if (exists) return;
     }
 
-    const isOptimistic = msg.id == null;
     const senderId = Number(msg.sender_id);
-    const newText = msg.message || "";
 
-    if (!isOptimistic) {
-        const pendingEls = container.querySelectorAll(".msg[data-pending]");
-        for (const pel of pendingEls) {
-            const pt = pel.querySelector(".msg-text")?.textContent || "";
-            const ps = pel.dataset.senderId;
-            if (String(ps) === String(senderId) && pt === newText) {
-                delete pel.dataset.pending;
-                return;
-            }
-        }
-    }
-
-    const el = renderMessage(newText, false, null, senderId, msg.id);
-    if (isOptimistic) el.dataset.pending = "true";
+    const el = renderMessage(
+        msg.message || "",
+        false,
+        msg.sent_at || null,
+        senderId,
+        msg.id,
+        msg.is_edited,
+        msg.is_deleted,
+    );
 
     container.appendChild(el);
     container.scrollTop = container.scrollHeight;
@@ -205,23 +229,12 @@ function appendMessageToUI(msg) {
 // ============================================================
 
 export function initChatEvents() {
-    console.log(
-        "[EventsOn] initChatEvents() — регистрируем слушатель 'new_message'",
-    );
-
     window.runtime.EventsOn("new_message", (data) => {
-        console.log("[EventsOn] Событие 'new_message' получено!");
-
         let msg;
-        if (typeof data === "string") {
-            try {
-                msg = JSON.parse(data);
-            } catch (e) {
-                console.error("[EventsOn] JSON.parse ошибка:", e.toString());
-                return;
-            }
-        } else {
-            msg = data;
+        try {
+            msg = typeof data === "string" ? JSON.parse(data) : data;
+        } catch {
+            return;
         }
 
         if (Number(msg.chat_id) === Number(window.currentOpenChatId)) {
@@ -231,7 +244,7 @@ export function initChatEvents() {
 }
 
 // ============================================================
-// Чат
+// Открытие чата — один Go-вызов GetChatHistory вместо каскада
 // ============================================================
 
 async function openChatById(
@@ -268,16 +281,19 @@ async function openChatById(
         ),
     );
 
+    // Один Go-вызов: загружает сообщения + профили отправителей + помечает прочитанным
     try {
-        const msgResp = await GetChatMessages(chatId, null, null);
-        if (msgResp.messages) {
-            const uniqueIds = [
-                ...new Set(msgResp.messages.map((m) => m.sender_id)),
-            ];
-            await Promise.all(uniqueIds.map((id) => ensureProfile(id)));
+        const history = await GetChatHistory(chatId, null, null);
 
-            let maxMsgId = 0;
-            msgResp.messages.forEach((msg) => {
+        // Сохраняем профили в кэш
+        if (history.profiles) {
+            for (const [sid, profile] of Object.entries(history.profiles)) {
+                putProfile(sid, profile);
+            }
+        }
+
+        if (history.messages) {
+            history.messages.forEach((msg) => {
                 messagesContainer.appendChild(
                     renderMessage(
                         msg.message || "(пусто)",
@@ -289,33 +305,23 @@ async function openChatById(
                         msg.is_deleted,
                     ),
                 );
-                if (Number(msg.id) > maxMsgId) maxMsgId = Number(msg.id);
             });
-
-            if (maxMsgId > 0) {
-                MarkMessagesAsRead(
-                    Number(chatId),
-                    Number(currentUserId),
-                    { last_read_message_id: maxMsgId },
-                ).catch(() => {});
-            }
         }
         messagesContainer.scrollTop = messagesContainer.scrollHeight;
     } catch (err) {
-        console.error("Ошибка загрузки сообщений:", err);
+        console.error("Ошибка загрузки истории чата:", err);
     }
 
+    // Аватар собеседника в шапке чата
     try {
         const membersResp = await GetChatMembers(chatId);
         const otherId = (membersResp.members || []).find(
             (m) => Number(m) !== Number(currentUserId),
         );
         if (otherId) {
-            const profile = await ensureProfile(Number(otherId));
+            const profile = getCachedProfile(otherId) || await loadProfile(Number(otherId));
             if (chatAvatar && profile && profile.avatar_id) {
-                chatAvatar.src =
-                    "https://hntgolang.duckdns.org/api/v2/user/avatar?id=" +
-                    profile.avatar_id;
+                loadAvatar(chatAvatar, profile.avatar_id);
             }
         }
     } catch (_e) {
@@ -325,6 +331,10 @@ async function openChatById(
     chatWindow.classList.add("slide-up");
 }
 
+// ============================================================
+// Список чатов — один Go-вызов GetChatsWithProfiles
+// ============================================================
+
 async function refreshChatList(
     listEl,
     chatWindow,
@@ -332,18 +342,20 @@ async function refreshChatList(
     messagesContainer,
 ) {
     try {
-        const resp = await GetUserChats(currentUserId);
+        // Один Go-возврат: чаты + профили собеседников
+        const resp = await GetChatsWithProfiles();
         listEl.innerHTML = "";
 
-        const chats = resp.chats || resp;
-        const chatList = Array.isArray(chats) ? chats : [];
+        const chatList = resp.chats || [];
         if (chatList.length === 0) {
             listEl.innerHTML =
                 '<li style="padding: 20px; text-align: center; color: #5d6266;">Нет доступных чатов</li>';
             return;
         }
 
-        chatList.forEach((chat) => {
+        chatList.forEach((entry) => {
+            const chat = entry.chat;
+
             const li = document.createElement("li");
             li.className = "chat-item";
             li.dataset.chatId = chat.id;
@@ -396,23 +408,10 @@ async function refreshChatList(
 
             listEl.appendChild(li);
 
-            // Асинхронно подгружаем аватар собеседника
-            if (chat.name) {
-                GetUserID(chat.name)
-                    .then((resp) => ensureProfile(resp.user_id))
-                    .then((profile) => {
-                        if (profile && profile.avatar_id) {
-                            const img = listEl.querySelector(
-                                `[data-chat-id="${chat.id}"] .chat-item-avatar`,
-                            );
-                            if (img) {
-                                img.src =
-                                    "https://hntgolang.duckdns.org/api/v2/user/avatar?id=" +
-                                    profile.avatar_id;
-                            }
-                        }
-                    })
-                    .catch(() => {});
+            // Аватар собеседника — профиль уже пришёл от Go
+            if (entry.profile && entry.profile.avatar_id) {
+                putProfile(entry.profile.id, entry.profile);
+                loadAvatar(avatarImg, entry.profile.avatar_id);
             }
         });
     } catch (err) {
@@ -421,6 +420,10 @@ async function refreshChatList(
             '<li style="padding: 20px; text-align: center; color: #c0392b;">Ошибка загрузки чатов</li>';
     }
 }
+
+// ============================================================
+// Основная функция инициализации
+// ============================================================
 
 export function initChats(containerId, userId, username, userData) {
     initChatEvents();
@@ -486,14 +489,12 @@ export function initChats(containerId, userId, username, userData) {
         </div>
     `;
 
-    // Подставляем аватар текущего пользователя в сайдбар
+    // Аватар текущего пользователя в сайдбаре
     const profile = window.userProfilesCache[userId];
     if (profile && profile.avatar_id) {
         const sidebarImg = document.getElementById("sidebar-avatar");
         if (sidebarImg) {
-            sidebarImg.src =
-                "https://hntgolang.duckdns.org/api/v2/user/avatar?id=" +
-                profile.avatar_id;
+            loadAvatar(sidebarImg, profile.avatar_id);
         }
     }
 
@@ -518,18 +519,18 @@ export function initChats(containerId, userId, username, userData) {
     const sendBtn = document.getElementById("msg-send-btn");
     const searchInput = document.getElementById("search-input");
 
+    // Клик по сообщению — открыть профиль автора
     messagesContainer.addEventListener("click", (e) => {
         const msgEl = e.target.closest(".msg");
         if (!msgEl || msgEl.classList.contains("system") || msgEl.classList.contains("msg-deleted")) return;
-
         if (e.target.closest(".msg-action-btn") || e.target.closest(".msg-edit-input")) return;
-
         if (e.target.closest(".msg") && msgEl.dataset.senderId) {
             openUserProfile(Number(msgEl.dataset.senderId));
             return;
         }
     });
 
+    // Действия над сообщениями (edit/delete/save/cancel)
     messagesContainer.addEventListener("click", (e) => {
         const editBtn = e.target.closest(".msg-edit-btn");
         if (editBtn) {
@@ -681,30 +682,12 @@ export function initChats(containerId, userId, username, userData) {
 
     closeBtn.addEventListener("click", closeChat);
 
-    // ============================================================
-    // Отправка сообщения через HTTP POST (Go → внешнее API)
-    // ============================================================
-
+    // Отправка сообщения — только через WS, рендер по эху от сервера
     function sendMessage() {
         const text = msgInput.value.trim();
         if (!text || currentChatId === null) return;
 
-        const payload = {
-            message: text,
-            sender_id: Number(currentUserId),
-            chat_id: Number(currentChatId),
-        };
-
-        appendMessageToUI(payload);
-
-        SendChatMessage(Number(currentChatId), payload)
-            .then(() => {
-                console.log("[Send] Сообщение отправлено:", payload);
-            })
-            .catch((err) => {
-                console.error("[Send] Ошибка:", err);
-            });
-
+        SendChatMessage(Number(currentChatId), { message: text });
         msgInput.value = "";
     }
 
@@ -713,6 +696,7 @@ export function initChats(containerId, userId, username, userData) {
         if (e.key === "Enter") sendMessage();
     });
 
+    // Поиск/создание чата — один Go-вызов FindOrCreateChat вместо каскада
     searchInput.addEventListener("keydown", async (e) => {
         if (e.key !== "Enter") return;
         const query = searchInput.value.trim();
@@ -721,16 +705,7 @@ export function initChats(containerId, userId, username, userData) {
         searchInput.value = "";
 
         try {
-            const targetUser = await GetUserID(query);
-            const targetUserId = targetUser.user_id;
-
-            const chatResp = await CreateChat({
-                author: currentUserId,
-                chat_name: query,
-                target_user: targetUserId,
-            });
-            const newChatId = chatResp.chat_id;
-
+            const chatResp = await FindOrCreateChat(query);
             await refreshChatList(
                 listEl,
                 chatWindow,
@@ -738,7 +713,7 @@ export function initChats(containerId, userId, username, userData) {
                 messagesContainer,
             );
             await openChatById(
-                newChatId,
+                chatResp.chat_id,
                 query,
                 listEl,
                 chatWindow,

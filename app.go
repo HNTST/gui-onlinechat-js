@@ -3,15 +3,18 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"mime/multipart"
 	"net/http"
+	"net/http/cookiejar"
 	"net/url"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -25,15 +28,18 @@ type App struct {
 	httpClient   *http.Client
 	wsConn       *websocket.Conn
 	wsMu         sync.Mutex
+	wsSendCh     chan []byte
+	wsStarted    atomic.Bool
 	shuttingDown bool
 	userID       int64
 }
 
 // NewApp creates a new App application struct
 func NewApp() *App {
+	jar, _ := cookiejar.New(nil)
 	return &App{
 		serverAddr: "https://hntgolang.duckdns.org",
-		httpClient: &http.Client{},
+		httpClient: &http.Client{Jar: jar},
 	}
 }
 
@@ -62,20 +68,27 @@ func (a *App) closeWS() {
 }
 
 // connectWS — устанавливает соединение с внешним WebSocket-сервером
-func (a *App) connectWS(userID int64) error {
+func (a *App) connectWS() error {
 	serverURL, _ := url.Parse(a.serverAddr)
 	wsURL := url.URL{
 		Scheme: "wss",
 		Host:   serverURL.Host,
 		Path:   "/api/v2/ws",
-		RawQuery: url.Values{
-			"user_id": {strconv.FormatInt(userID, 10)},
-		}.Encode(),
 	}
+
+	header := http.Header{}
+	if a.httpClient.Jar != nil {
+		httpsURL, _ := url.Parse("https://" + serverURL.Host)
+		cookies := a.httpClient.Jar.Cookies(httpsURL)
+		for _, c := range cookies {
+			header.Add("Cookie", c.String())
+		}
+	}
+	header.Add("Origin", "http://localhost:34115")
 
 	log.Printf("[WS] Подключение к %s", wsURL.String())
 
-	conn, _, err := websocket.DefaultDialer.Dial(wsURL.String(), nil)
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL.String(), header)
 	if err != nil {
 		return fmt.Errorf("WebSocket dial error: %w", err)
 	}
@@ -88,55 +101,118 @@ func (a *App) connectWS(userID int64) error {
 	return nil
 }
 
-// wsReadLoop — бесконечный цикл чтения сообщений из WebSocket
+// wsReadLoop — цикл чтения сообщений из WebSocket (только чтение)
 func (a *App) wsReadLoop() {
-	a.wsMu.Lock()
-	conn := a.wsConn
-	a.wsMu.Unlock()
-
-	if conn == nil {
-		log.Printf("[WS] Нет активного соединения для чтения")
-		return
-	}
-
-	defer func() {
-		log.Printf("[WS] Цикл чтения завершён, очистка...")
-		a.closeWS()
-		if !a.shuttingDown {
-			a.reconnect()
-		}
-	}()
-
 	for {
-		_, data, err := conn.ReadMessage()
-		if err != nil {
-			log.Printf("[WS ERROR] Ошибка чтения: %v", err)
+		a.wsMu.Lock()
+		conn := a.wsConn
+		a.wsMu.Unlock()
+
+		if conn == nil {
 			return
 		}
-		log.Printf("[WS RECEIVED] %s", string(data))
+
+		_, data, err := conn.ReadMessage()
+		if err != nil {
+			log.Printf("[WS READ] Ошибка: %v", err)
+			return
+		}
+
+		log.Printf("[WS READ] %s", string(data))
 		runtime.EventsEmit(a.ctx, "new_message", string(data))
 	}
 }
 
-// reconnect — переподключение с таймаутом после разрыва соединения
-func (a *App) reconnect() {
+// wsWriteLoop — цикл записи сообщений в WebSocket (только запись)
+func (a *App) wsWriteLoop(stopCh <-chan struct{}) {
 	for {
-		if a.shuttingDown {
-			log.Printf("[WS] Выход — пропускаем переподключение")
+		select {
+		case msg, ok := <-a.wsSendCh:
+			if !ok {
+				return
+			}
+			a.wsMu.Lock()
+			conn := a.wsConn
+			a.wsMu.Unlock()
+
+			if conn == nil {
+				log.Printf("[WS WRITE] Нет соединения, пропуск сообщения")
+				continue
+			}
+
+			if err := conn.WriteMessage(websocket.TextMessage, msg); err != nil {
+				log.Printf("[WS WRITE] Ошибка записи: %v", err)
+				return
+			}
+		case <-stopCh:
 			return
 		}
-		log.Printf("[WS] Переподключение через 3 секунды...")
-		time.Sleep(3 * time.Second)
-		if a.shuttingDown {
-			log.Printf("[WS] Выход — пропускаем переподключение")
-			return
+	}
+}
+
+// startWS — единая точка управления WS: коннект → чтение + запись → реконнект
+func (a *App) startWS() {
+	if !a.wsStarted.CompareAndSwap(false, true) {
+		return
+	}
+	defer a.wsStarted.Store(false)
+
+	for !a.shuttingDown {
+		// Проверяем наличие кук
+		if a.httpClient.Jar != nil {
+			serverURL, _ := url.Parse(a.serverAddr)
+			httpsURL, _ := url.Parse("https://" + serverURL.Host)
+			if len(a.httpClient.Jar.Cookies(httpsURL)) == 0 {
+				log.Printf("[WS] Нет кук в jar — пропускаем подключение")
+				return
+			}
 		}
-		if err := a.connectWS(a.userID); err != nil {
-			log.Printf("[WS] Ошибка переподключения: %v", err)
+
+		// Подключаемся
+		if err := a.connectWS(); err != nil {
+			log.Printf("[WS] Ошибка подключения: %v", err)
+			time.Sleep(3 * time.Second)
 			continue
 		}
-		log.Printf("[WS] Переподключение успешно, запуск цикла чтения")
-		a.wsReadLoop()
+
+		log.Printf("[WS] Подключение успешно, запуск циклов чтения/записи")
+
+		// Канал для отправки + сигнал остановки
+		a.wsSendCh = make(chan []byte, 64)
+		stopCh := make(chan struct{})
+
+		var wg sync.WaitGroup
+		wg.Add(2)
+
+		// Читающая горутина — главная, при выходе останавливает запись
+		go func() {
+			defer wg.Done()
+			a.wsReadLoop()
+			close(stopCh)
+		}()
+
+		// Пишущая горутина — читает из канала, пишет в сокет
+		go func() {
+			defer wg.Done()
+			a.wsWriteLoop(stopCh)
+		}()
+
+		// Ждём: когда reader умрёт — закрываем stopCh → writer тоже умрёт
+		wg.Wait()
+
+		// Чистим соединение
+		a.wsMu.Lock()
+		if a.wsConn != nil {
+			a.wsConn.Close()
+			a.wsConn = nil
+		}
+		a.wsMu.Unlock()
+		close(a.wsSendCh)
+
+		if !a.shuttingDown {
+			log.Printf("[WS] Переподключение через 3 сек...")
+			time.Sleep(3 * time.Second)
+		}
 	}
 }
 
@@ -151,11 +227,12 @@ func (a *App) Greet(name string) string {
 
 // --- Чаты ---
 
-// SaveChatRequest — тело POST /api/v2/chat
+// SaveChatRequest — тело POST /api/v2/chat (согласно Swagger)
 type SaveChatRequest struct {
 	Author     int64  `json:"author"`
 	ChatName   string `json:"chat_name"`
 	TargetUser int64  `json:"target_user"`
+	IsGroup    *bool  `json:"is_group,omitempty"`
 }
 
 // SaveChatResponse — ответ POST /api/v2/chat
@@ -188,7 +265,7 @@ type ChatExtendedDTO struct {
 	ID          int             `json:"id"`
 	Name        string          `json:"name"`
 	UnreadCount int             `json:"unread_count"`
-	LastMessage *LastMessageDTO `json:"last_message"`
+	LastMessage *LastMessageDTO `json:"last_message,omitempty"`
 }
 
 // GetUserChatsExtendedResponse — ответ GET /api/v2/chats
@@ -219,9 +296,7 @@ type GetChatMessagesResponse struct {
 
 // SaveMessageRequest — тело POST /api/v2/chats/{chat_id}/messages
 type SaveMessageRequest struct {
-	Message  string `json:"message"`
-	SenderID int    `json:"sender_id"`
-	ChatID   int64  `json:"chat_id"`
+	Message string `json:"message"`
 }
 
 // MarkMessagesAsReadRequest — тело PATCH /api/v2/chats/{chat_id}/messages/read-status
@@ -240,8 +315,8 @@ type EditMessageRequest struct {
 type GetUserResponse struct {
 	ID       int    `json:"id"`
 	Username string `json:"username"`
-	AvatarID int    `json:"avatar_id"`
-	Reg      string `json:"reg"`
+	AvatarID *int   `json:"avatar_id,omitempty"`
+	Reg      string `json:"reg,omitempty"`
 }
 
 // SaveUserRequest — тело POST /api/v2/user
@@ -254,8 +329,8 @@ type SaveUserRequest struct {
 type SaveUserResponse struct {
 	ID       int    `json:"id"`
 	Username string `json:"username"`
-	AvatarID int    `json:"avatar_id"`
-	Reg      string `json:"reg"`
+	AvatarID *int   `json:"avatar_id,omitempty"`
+	Reg      string `json:"reg,omitempty"`
 }
 
 // GetUserIDResponse — ответ GET /api/v2/user_id
@@ -290,6 +365,7 @@ func (a *App) doRequest(method, path string, query url.Values, body, out interfa
 		if err != nil {
 			return fmt.Errorf("ошибка сериализации: %w", err)
 		}
+		log.Printf("[HTTP %s] %s -> JSON: %s", method, u.String(), string(data))
 		reqBody = bytes.NewReader(data)
 	}
 
@@ -297,8 +373,11 @@ func (a *App) doRequest(method, path string, query url.Values, body, out interfa
 	if err != nil {
 		return fmt.Errorf("ошибка создания запроса: %w", err)
 	}
-	req.Header.Set("Content-Type", "application/json")
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
 
+	log.Printf("[HTTP %s] %s Headers: %v", method, u.String(), req.Header)
 	resp, err := a.httpClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("ошибка выполнения запроса: %w", err)
@@ -307,6 +386,7 @@ func (a *App) doRequest(method, path string, query url.Values, body, out interfa
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		respData, _ := io.ReadAll(resp.Body)
+		log.Printf("[HTTP %s] %s <- статус %d: %s", method, u.String(), resp.StatusCode, string(respData))
 		return fmt.Errorf("API вернул статус %d: %s", resp.StatusCode, string(respData))
 	}
 
@@ -342,10 +422,9 @@ func (a *App) AddUsersToChat(chatID int64, req AddUserToChatRequest) (*AddUserTo
 }
 
 // 3. GetUserChats — чаты пользователя (GET /api/v2/chats?user_id=)
-func (a *App) GetUserChats(userID int64) (*GetUserChatsExtendedResponse, error) {
-	query := url.Values{"user_id": {strconv.FormatInt(userID, 10)}}
+func (a *App) GetUserChats() (*GetUserChatsExtendedResponse, error) {
 	var resp GetUserChatsExtendedResponse
-	if err := a.doRequest(http.MethodGet, "/api/v2/chats", query, nil, &resp); err != nil {
+	if err := a.doRequest(http.MethodGet, "/api/v2/chats", nil, nil, &resp); err != nil {
 		return nil, err
 	}
 	return &resp, nil
@@ -378,32 +457,30 @@ func (a *App) GetChatMessages(chatID int64, lastMessageID *int64, limit *int) (*
 	return &resp, nil
 }
 
-// 6. SendChatMessage — отправка сообщения через HTTP POST + WS для broadcast
+// 6. SendChatMessage — отправка сообщения через канал в WS writer-горутину
 func (a *App) SendChatMessage(chatID int64, req SaveMessageRequest) error {
-	a.wsMu.Lock()
-	conn := a.wsConn
-	a.wsMu.Unlock()
+	wsMsg := map[string]interface{}{
+		"message":   req.Message,
+		"chat_id":   chatID,
+		"sender_id": a.userID,
+	}
+	data, _ := json.Marshal(wsMsg)
 
-	if conn != nil {
-		wsMsg := map[string]interface{}{
-			"message":   req.Message,
-			"chat_id":   chatID,
-			"sender_id": req.SenderID,
-		}
-		data, _ := json.Marshal(wsMsg)
-		if err := conn.WriteMessage(websocket.TextMessage, data); err != nil {
-			log.Printf("[Go Send WS WARN] Ошибка записи в WS: %v", err)
-		}
+	log.Printf("[WS SEND] userID=%d, chat_id=%d, message=%q", a.userID, chatID, req.Message)
+
+	select {
+	case a.wsSendCh <- data:
+	default:
+		log.Printf("[WS SEND] Канал переполнен, сообщение丢弃")
 	}
 
 	return nil
 }
 
 // 7. MarkMessagesAsRead — отметка о прочтении (PATCH /api/v2/chats/{chat_id}/messages/read-status)
-func (a *App) MarkMessagesAsRead(chatID, userID int64, req MarkMessagesAsReadRequest) error {
+func (a *App) MarkMessagesAsRead(chatID int64, req MarkMessagesAsReadRequest) error {
 	path := fmt.Sprintf("/api/v2/chats/%d/messages/read-status", chatID)
-	query := url.Values{"user_id": {strconv.FormatInt(userID, 10)}}
-	return a.doRequest(http.MethodPatch, path, query, req, nil)
+	return a.doRequest(http.MethodPatch, path, nil, req, nil)
 }
 
 // 8. EditChatMessage — редактирование сообщения (PUT /api/v2/chats/{chat_id}/messages/{message_id})
@@ -418,20 +495,29 @@ func (a *App) DeleteChatMessage(chatID, messageID int64) error {
 	return a.doRequest(http.MethodDelete, path, nil, nil, nil)
 }
 
-// 10. GetUserData — данные пользователя (GET /api/v2/user?user_id=)
+// 10. GetUserData — данные чужого пользователя (GET /api/v2/users?id=)
 func (a *App) GetUserData(userID int64) (*GetUserResponse, error) {
-	query := url.Values{"user_id": {strconv.FormatInt(userID, 10)}}
+	query := url.Values{"id": {strconv.FormatInt(userID, 10)}}
 	var resp GetUserResponse
-	if err := a.doRequest(http.MethodGet, "/api/v2/user", query, nil, &resp); err != nil {
+	if err := a.doRequest(http.MethodGet, "/api/v2/users", query, nil, &resp); err != nil {
 		return nil, err
 	}
 	return &resp, nil
 }
 
-// 11. RegisterUser — регистрация пользователя (POST /api/v2/user)
+// 10a. GetSelfData — данные своего аккаунта (GET /api/v2/user/profile)
+func (a *App) GetSelfData() (*GetUserResponse, error) {
+	var resp GetUserResponse
+	if err := a.doRequest(http.MethodGet, "/api/v2/user/profile", nil, nil, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// 11. RegisterUser — регистрация пользователя (POST /api/v2/auth/register)
 func (a *App) RegisterUser(req SaveUserRequest) (*SaveUserResponse, error) {
 	var resp SaveUserResponse
-	if err := a.doRequest(http.MethodPost, "/api/v2/user", nil, req, &resp); err != nil {
+	if err := a.doRequest(http.MethodPost, "/api/v2/auth/register", nil, req, &resp); err != nil {
 		return nil, err
 	}
 	return &resp, nil
@@ -448,10 +534,8 @@ func (a *App) GetUserID(username string) (*GetUserIDResponse, error) {
 }
 
 // 13. UploadAvatar — загрузка аватара (POST /api/v2/user/avatar?user_id=, multipart/form-data)
-func (a *App) UploadAvatar(userID int64, fileName string, fileData []byte) (*UploadAvatarResponse, error) {
-	query := url.Values{"user_id": {strconv.FormatInt(userID, 10)}}
+func (a *App) UploadAvatar(fileName string, fileData []byte) (*UploadAvatarResponse, error) {
 	u, _ := url.Parse(a.serverAddr + "/api/v2/user/avatar")
-	u.RawQuery = query.Encode()
 
 	var buf bytes.Buffer
 	w := multipart.NewWriter(&buf)
@@ -512,44 +596,182 @@ func (a *App) GetAvatar(avatarID int64) ([]byte, error) {
 	return io.ReadAll(resp.Body)
 }
 
+// 15. GetAvatarBase64 — аватар в base64 (GET /api/v2/user/avatar?id=)
+func (a *App) GetAvatarBase64(avatarID string) (string, error) {
+	query := url.Values{"id": {avatarID}}
+	u, _ := url.Parse(a.serverAddr + "/api/v2/user/avatar")
+	u.RawQuery = query.Encode()
+
+	req, err := http.NewRequestWithContext(a.ctx, http.MethodGet, u.String(), nil)
+	if err != nil {
+		return "", fmt.Errorf("ошибка создания запроса: %w", err)
+	}
+
+	resp, err := a.httpClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("ошибка выполнения запроса: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("API вернул статус %d", resp.StatusCode)
+	}
+
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("ошибка чтения ответа: %w", err)
+	}
+
+	return base64.StdEncoding.EncodeToString(data), nil
+}
+
+// ============================================================
+// Компоновочные DTO — объединяют несколько вызовов API в один
+// ============================================================
+
+// ChatWithProfile — чат + профиль собеседника (для рендера списка чатов)
+type ChatWithProfile struct {
+	Chat    ChatExtendedDTO  `json:"chat"`
+	Profile *GetUserResponse `json:"profile,omitempty"`
+}
+
+// ChatsWithProfilesResponse — ответ GetChatsWithProfiles
+type ChatsWithProfilesResponse struct {
+	Chats []ChatWithProfile `json:"chats"`
+}
+
+// ChatHistoryResponse — история чата + профили отправителей (для рендера окна чата)
+type ChatHistoryResponse struct {
+	Messages []MessageDTO              `json:"messages"`
+	Profiles map[string]*GetUserResponse `json:"profiles"`
+}
+
+// ============================================================
+// Компоновочные методы — вся оркестрация сетевых вызовов в Go
+// ============================================================
+
+// FindOrCreateChat — поиск пользователя по имени + создание чата за один вызов.
+func (a *App) FindOrCreateChat(query string) (*SaveChatResponse, error) {
+	// Шаг 1: находим ID пользователя по имени
+	uidResp, err := a.GetUserID(query)
+	if err != nil {
+		return nil, fmt.Errorf("пользователь %q не найден: %w", query, err)
+	}
+
+	// Шаг 2: создаём чат (author = текущий пользователь, target_user = найденный)
+	createReq := SaveChatRequest{
+		Author:     a.userID,
+		ChatName:   query,
+		TargetUser: int64(uidResp.UserID),
+	}
+	chatResp, err := a.CreateChat(createReq)
+	if err != nil {
+		return nil, fmt.Errorf("не удалось создать чат: %w", err)
+	}
+	return chatResp, nil
+}
+
+// GetChatsWithProfiles — список чатов с подResolution профилей собеседников.
+// Возвращает готовые данные для рендера сайдбара.
+func (a *App) GetChatsWithProfiles() (*ChatsWithProfilesResponse, error) {
+	chatsResp, err := a.GetUserChats()
+	if err != nil {
+		return nil, err
+	}
+
+	result := make([]ChatWithProfile, 0, len(chatsResp.Chats))
+	for _, chat := range chatsResp.Chats {
+		cwp := ChatWithProfile{Chat: chat}
+
+		// Пытаемся найти профиль собеседника по имени чата
+		if chat.Name != "" {
+			if uidResp, err := a.GetUserID(chat.Name); err == nil {
+				if profile, err := a.GetUserData(int64(uidResp.UserID)); err == nil {
+					cwp.Profile = profile
+				}
+			}
+		}
+
+		result = append(result, cwp)
+	}
+
+	return &ChatsWithProfilesResponse{Chats: result}, nil
+}
+
+// GetChatHistory — полная история чата с профилями отправителей + автопометка прочтения.
+// Возвращает готовые данные для рендера окна чата.
+func (a *App) GetChatHistory(chatID int64, lastMessageID *int64, limit *int) (*ChatHistoryResponse, error) {
+	// Шаг 1: загружаем сообщения
+	msgResp, err := a.GetChatMessages(chatID, lastMessageID, limit)
+	if err != nil {
+		return nil, err
+	}
+
+	// Шаг 2: собираем уникальные ID отправителей и подтягиваем их профили
+	profiles := make(map[string]*GetUserResponse)
+	seen := make(map[int]bool)
+	for _, msg := range msgResp.Messages {
+		if !seen[msg.SenderID] {
+			seen[msg.SenderID] = true
+			sid := int64(msg.SenderID)
+			var profile *GetUserResponse
+			if int64(msg.SenderID) == a.userID {
+				profile, err = a.GetSelfData()
+			} else {
+				profile, err = a.GetUserData(sid)
+			}
+			if err == nil {
+				profiles[strconv.Itoa(msg.SenderID)] = profile
+			}
+		}
+	}
+
+	// Шаг 3: помечаем сообщения прочитанными
+	if len(msgResp.Messages) > 0 {
+		maxID := 0
+		for _, msg := range msgResp.Messages {
+			if msg.ID > maxID {
+				maxID = msg.ID
+			}
+		}
+		if maxID > 0 {
+			_ = a.MarkMessagesAsRead(chatID, MarkMessagesAsReadRequest{LastReadMessageID: maxID})
+		}
+	}
+
+	return &ChatHistoryResponse{
+		Messages: msgResp.Messages,
+		Profiles: profiles,
+	}, nil
+}
+
 // ============================================================
 // Логика входа + запуск WebSocket
 // ============================================================
 
 // Login реализует идемпотентный вход и запускает WebSocket-соединение
-func (a *App) Login(username string) (*GetUserResponse, error) {
-	idResp, err := a.GetUserID(username)
-	if err == nil {
-		userData, err := a.GetUserData(int64(idResp.UserID))
-		if err != nil {
-			return nil, fmt.Errorf("ошибка получения данных пользователя: %w", err)
-		}
-		a.userID = int64(userData.ID)
-		go a.startWS()
-		return userData, nil
+func (a *App) Login(username, password string) (*GetUserResponse, error) {
+	var resp GetUserResponse
+	body := map[string]string{"username": username, "password": password}
+	if err := a.doRequest(http.MethodPost, "/api/v2/auth/login", nil, body, &resp); err != nil {
+		return nil, fmt.Errorf("ошибка входа: %w", err)
 	}
 
-	regResp, err := a.RegisterUser(SaveUserRequest{Username: username})
-	if err != nil {
-		return nil, fmt.Errorf("регистрация не удалась: %w", err)
-	}
-
-	userData, err := a.GetUserData(int64(regResp.ID))
-	if err != nil {
-		return nil, fmt.Errorf("ошибка получения данных нового пользователя: %w", err)
-	}
-
-	a.userID = int64(userData.ID)
+	a.userID = int64(resp.ID)
 	go a.startWS()
-	return userData, nil
+	return &resp, nil
 }
 
-// startWS — запускает подключение к WS и цикл чтения в горутине
-func (a *App) startWS() {
-	if err := a.connectWS(a.userID); err != nil {
-		log.Printf("[WS] Начальное подключение не удалось: %v", err)
-		a.reconnect()
-		return
+func (a *App) Register(username, password string) (*GetUserResponse, error) {
+	reg, err := a.RegisterUser(SaveUserRequest{Username: username, Password: password})
+	if err != nil {
+		return nil, err
 	}
-	a.wsReadLoop()
+	a.userID = int64(reg.ID)
+	go a.startWS()
+	return &GetUserResponse{ID: reg.ID, Username: reg.Username, AvatarID: reg.AvatarID, Reg: reg.Reg}, nil
+}
+
+func (a *App) Logout() error {
+	return a.doRequest(http.MethodPost, "/api/v2/auth/logout", nil, nil, nil)
 }
