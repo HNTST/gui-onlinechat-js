@@ -4,10 +4,13 @@ import (
 	"strconv"
 
 	"gui-onlinechat/backend/core/dto"
+	"gui-onlinechat/backend/core/logger"
 )
 
 // GetChatHistory — история чата с профилями отправителей + автопометка прочтения.
 func (f *Chats) GetChatHistory(chatID int64, lastMessageID *int64, limit *int) (*dto.ChatHistoryResponse, error) {
+	log := logger.For("chats", "GetChatHistory")
+
 	msgResp, err := f.GetChatMessages(chatID, lastMessageID, limit)
 	if err != nil {
 		return nil, err
@@ -42,6 +45,7 @@ func (f *Chats) GetChatHistory(chatID int64, lastMessageID *int64, limit *int) (
 		}
 	}
 
+	log.Info("история загружена", "chatID", chatID, "messages", len(msgResp.Messages), "profiles", len(profiles))
 	return &dto.ChatHistoryResponse{
 		Messages: msgResp.Messages,
 		Profiles: profiles,

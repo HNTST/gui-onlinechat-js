@@ -1,4 +1,4 @@
-export namespace main {
+export namespace dto {
 	
 	export class AddUserToChatRequest {
 	    users_ids: number[];
@@ -301,18 +301,6 @@ export namespace main {
 		    }
 		    return a;
 		}
-	}
-	export class GetUserIDResponse {
-	    user_id: number;
-	
-	    static createFrom(source: any = {}) {
-	        return new GetUserIDResponse(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.user_id = source["user_id"];
-	    }
 	}
 	
 	

@@ -1,8 +1,18 @@
 package auth
 
-import "net/http"
+import (
+	"gui-onlinechat/backend/core/errs"
+	"gui-onlinechat/backend/core/logger"
+)
 
 // Logout — выход из аккаунта.
 func (f *Auth) Logout() error {
-	return f.core.DoRequest(http.MethodPost, "/api/v2/auth/logout", nil, nil, nil)
+	log := logger.For("auth", "Logout")
+
+	if err := f.core.DoRequest("POST", "/api/v2/auth/logout", nil, nil, nil); err != nil {
+		log.Error("ошибка выхода", err)
+		return errs.Wrapf(errs.CodeHTTP, "auth.Logout", err, "ошибка выхода")
+	}
+	log.Info("выход выполнен")
+	return nil
 }

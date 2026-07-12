@@ -4,16 +4,16 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
+
+	"gui-onlinechat/backend/core/errs"
+	"gui-onlinechat/backend/core/logger"
 )
 
 // BaseApp содержит общие ресурсы: контекст, HTTP-клиент, адрес сервера.
-// Все feature-пакеты получают указатель на эту структуру.
 type BaseApp struct {
 	Ctx        context.Context
 	ServerAddr string
@@ -30,12 +30,13 @@ func New(serverAddr string) *BaseApp {
 	}
 }
 
-// DoRequest — универсальный HTTP-helper: сериализует body, отправляет запрос,
-// проверяет статус, декодирует ответ в out.
+// DoRequest — универсальный HTTP-helper.
 func (b *BaseApp) DoRequest(method, path string, query url.Values, body, out interface{}) error {
+	log := logger.For("httpclient", method+" "+path)
+
 	u, err := url.Parse(b.ServerAddr + path)
 	if err != nil {
-		return fmt.Errorf("неверный URL: %w", err)
+		return errs.Wrapf(errs.CodeInternal, "DoRequest", err, "неверный URL: %s", path)
 	}
 	if query != nil {
 		u.RawQuery = query.Encode()
@@ -45,36 +46,36 @@ func (b *BaseApp) DoRequest(method, path string, query url.Values, body, out int
 	if body != nil {
 		data, err := json.Marshal(body)
 		if err != nil {
-			return fmt.Errorf("ошибка сериализации: %w", err)
+			return errs.Wrapf(errs.CodeInternal, "DoRequest", err, "ошибка сериализации")
 		}
-		log.Printf("[HTTP %s] %s -> JSON: %s", method, u.String(), string(data))
+		log.Debug("отправка запроса", "url", u.String(), "body", string(data))
 		reqBody = bytes.NewReader(data)
 	}
 
 	req, err := http.NewRequestWithContext(b.Ctx, method, u.String(), reqBody)
 	if err != nil {
-		return fmt.Errorf("ошибка создания запроса: %w", err)
+		return errs.Wrapf(errs.CodeInternal, "DoRequest", err, "ошибка создания запроса")
 	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
 
-	log.Printf("[HTTP %s] %s Headers: %v", method, u.String(), req.Header)
 	resp, err := b.HTTPClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("ошибка выполнения запроса: %w", err)
+		return errs.Wrapf(errs.CodeHTTP, "DoRequest", err, "ошибка выполнения запроса")
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		respData, _ := io.ReadAll(resp.Body)
-		log.Printf("[HTTP %s] %s <- статус %d: %s", method, u.String(), resp.StatusCode, string(respData))
-		return fmt.Errorf("API вернул статус %d: %s", resp.StatusCode, string(respData))
+		code := errs.FromHTTPStatus(resp.StatusCode)
+		log.Error("API вернул ошибку", err, "status", resp.StatusCode, "body", string(respData))
+		return errs.Wrapf(code, "DoRequest", err, "API вернул статус %d: %s", resp.StatusCode, string(respData))
 	}
 
 	if out != nil {
 		if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
-			return fmt.Errorf("ошибка декодирования ответа: %w", err)
+			return errs.Wrapf(errs.CodeInternal, "DoRequest", err, "ошибка декодирования ответа")
 		}
 	}
 	return nil

@@ -10,10 +10,11 @@ import (
 	"gui-onlinechat/backend/features/chats"
 	"gui-onlinechat/backend/features/files"
 	"gui-onlinechat/backend/features/users"
+
+	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 // App — минимальный «клей». Все методы промоутируются через embedded structs.
-// При добавлении новых API-маршрутов работа идёт строго внутри backend/features/*.
 type App struct {
 	ctx context.Context
 	*httpclient.BaseApp
@@ -56,6 +57,12 @@ func NewApp() *App {
 // startup вызывается Wails при запуске приложения.
 func (a *App) startup(ctx context.Context) {
 	a.BaseApp.Ctx = ctx
+
+	// Инжектируем emit-функцию в WS manager через runtime.EventsEmit.
+	a.Manager.SetEmitFn(func(event string, data ...interface{}) {
+		runtime.EventsEmit(ctx, event, data...)
+	})
+
 	log.Printf("[App] Запуск приложения, контекст сохранён")
 }
 

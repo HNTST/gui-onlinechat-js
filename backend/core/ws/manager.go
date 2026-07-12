@@ -2,8 +2,6 @@ package ws
 
 import (
 	"encoding/json"
-	"fmt"
-	"log"
 	"net/http"
 	"net/url"
 	"sync"
@@ -11,9 +9,14 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"gui-onlinechat/backend/core/errs"
+	"gui-onlinechat/backend/core/logger"
 )
 
-// Manager управляет WebSocket-соединением: подключение, чтение, запись, реконнект.
+// EmitFunc — функция для отправки событий во фронтенд.
+type EmitFunc func(event string, data ...interface{})
+
+// Manager управляет WebSocket-соединением.
 type Manager struct {
 	serverAddr string
 	httpClient *http.Client
@@ -24,7 +27,7 @@ type Manager struct {
 	started    atomic.Bool
 	shutdownCh chan struct{}
 
-	// UserID устанавливается после Login/Register и используется при отправке.
+	emitFn EmitFunc
 	userID int64
 }
 
@@ -37,19 +40,14 @@ func New(serverAddr string, httpClient *http.Client) *Manager {
 	}
 }
 
-// SetUserID обновляет ID текущего пользователя (вызывается после Login/Register).
-func (m *Manager) SetUserID(id int64) {
-	m.userID = id
-}
+func (m *Manager) SetUserID(id int64)  { m.userID = id }
+func (m *Manager) GetUserID() int64    { return m.userID }
+func (m *Manager) SetEmitFn(fn EmitFunc) { m.emitFn = fn }
 
-// UserID возвращает ID текущего пользователя.
-func (m *Manager) GetUserID() int64 {
-	return m.userID
-}
+// Start запускает цикл WS-жизни. Блокирующий, запускать в горутине.
+func (m *Manager) Start() {
+	log := logger.For("ws", "Start")
 
-// Start запускает цикл WS-жизни: коннект → read+write → реконнект.
-// Блокирующий вызов, запускать в горутине.
-func (m *Manager) Start(ctx interface{ Emit(string, ...interface{}) }) {
 	if !m.started.CompareAndSwap(false, true) {
 		return
 	}
@@ -62,23 +60,22 @@ func (m *Manager) Start(ctx interface{ Emit(string, ...interface{}) }) {
 		default:
 		}
 
-		// Проверяем наличие кук
 		if m.httpClient.Jar != nil {
 			serverURL, _ := url.Parse(m.serverAddr)
 			httpsURL, _ := url.Parse("https://" + serverURL.Host)
 			if len(m.httpClient.Jar.Cookies(httpsURL)) == 0 {
-				log.Printf("[WS] Нет кук в jar — пропускаем подключение")
+				log.Warn("нет кук в jar, пропуск подключения")
 				return
 			}
 		}
 
 		if err := m.connect(); err != nil {
-			log.Printf("[WS] Ошибка подключения: %v", err)
+			log.Error("ошибка подключения", err)
 			time.Sleep(3 * time.Second)
 			continue
 		}
 
-		log.Printf("[WS] Подключение успешно, запуск циклов чтения/записи")
+		log.Info("подключение установлено, запуск циклов")
 
 		m.sendCh = make(chan []byte, 64)
 		stopCh := make(chan struct{})
@@ -88,7 +85,7 @@ func (m *Manager) Start(ctx interface{ Emit(string, ...interface{}) }) {
 
 		go func() {
 			defer wg.Done()
-			m.readLoop(ctx)
+			m.readLoop()
 			close(stopCh)
 		}()
 
@@ -111,7 +108,7 @@ func (m *Manager) Start(ctx interface{ Emit(string, ...interface{}) }) {
 		case <-m.shutdownCh:
 			return
 		default:
-			log.Printf("[WS] Переподключение через 3 сек...")
+			log.Info("переподключение через 3 сек")
 			time.Sleep(3 * time.Second)
 		}
 	}
@@ -119,35 +116,39 @@ func (m *Manager) Start(ctx interface{ Emit(string, ...interface{}) }) {
 
 // Close безопасно закрывает WebSocket и останавливает реконнект.
 func (m *Manager) Close() {
+	log := logger.For("ws", "Close")
 	close(m.shutdownCh)
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.conn != nil {
 		m.conn.Close()
 		m.conn = nil
-		log.Printf("[WS] Соединение закрыто")
+		log.Info("соединение закрыто")
 	}
 }
 
-// Send отправляет JSON-сообщение через канал в WS writer-горутину.
+// Send отправляет JSON через канал в WS writer-горутину.
 func (m *Manager) Send(payload interface{}) error {
+	log := logger.For("ws", "Send")
+
 	data, err := json.Marshal(payload)
 	if err != nil {
-		return fmt.Errorf("ошибка сериализации WS-сообщения: %w", err)
+		return errs.Wrapf(errs.CodeInternal, "ws.Send", err, "ошибка сериализации")
 	}
 
-	log.Printf("[WS SEND] userID=%d, data=%s", m.userID, string(data))
+	log.Debug("отправка", "userID", m.userID, "data", string(data))
 
 	select {
 	case m.sendCh <- data:
 	default:
-		log.Printf("[WS SEND] Канал переполнен, сообщение丢弃")
+		log.Warn("канал переполнен, сообщение丢弃")
 	}
 	return nil
 }
 
-// connect устанавливает WebSocket-соединение.
 func (m *Manager) connect() error {
+	log := logger.For("ws", "connect")
+
 	serverURL, _ := url.Parse(m.serverAddr)
 	wsURL := url.URL{
 		Scheme: "wss",
@@ -165,23 +166,24 @@ func (m *Manager) connect() error {
 	}
 	header.Add("Origin", "http://localhost:34115")
 
-	log.Printf("[WS] Подключение к %s", wsURL.String())
+	log.Debug("подключение", "url", wsURL.String())
 
 	conn, _, err := websocket.DefaultDialer.Dial(wsURL.String(), header)
 	if err != nil {
-		return fmt.Errorf("WebSocket dial error: %w", err)
+		return errs.Wrap(errs.CodeHTTP, "ws.connect", err)
 	}
 
 	m.mu.Lock()
 	m.conn = conn
 	m.mu.Unlock()
 
-	log.Printf("[WS] Успешное подключение к %s", wsURL.Host+wsURL.Path)
+	log.Info("успешное подключение", "host", wsURL.Host+wsURL.Path)
 	return nil
 }
 
-// readLoop читает сообщения из WS и рассылает их через Wails EventsEmit.
-func (m *Manager) readLoop(emitter interface{ Emit(string, ...interface{}) }) {
+func (m *Manager) readLoop() {
+	log := logger.For("ws", "readLoop")
+
 	for {
 		m.mu.Lock()
 		conn := m.conn
@@ -193,17 +195,20 @@ func (m *Manager) readLoop(emitter interface{ Emit(string, ...interface{}) }) {
 
 		_, data, err := conn.ReadMessage()
 		if err != nil {
-			log.Printf("[WS READ] Ошибка: %v", err)
+			log.Error("ошибка чтения", err)
 			return
 		}
 
-		log.Printf("[WS READ] %s", string(data))
-		emitter.Emit("new_message", string(data))
+		log.Debug("получено", "data", string(data))
+		if m.emitFn != nil {
+			m.emitFn("new_message", string(data))
+		}
 	}
 }
 
-// writeLoop читает из sendCh и пишет в WebSocket.
 func (m *Manager) writeLoop(stopCh <-chan struct{}) {
+	log := logger.For("ws", "writeLoop")
+
 	for {
 		select {
 		case msg, ok := <-m.sendCh:
@@ -215,12 +220,12 @@ func (m *Manager) writeLoop(stopCh <-chan struct{}) {
 			m.mu.Unlock()
 
 			if conn == nil {
-				log.Printf("[WS WRITE] Нет соединения, пропуск сообщения")
+				log.Warn("нет соединения, пропуск")
 				continue
 			}
 
 			if err := conn.WriteMessage(websocket.TextMessage, msg); err != nil {
-				log.Printf("[WS WRITE] Ошибка записи: %v", err)
+				log.Error("ошибка записи", err)
 				return
 			}
 		case <-stopCh:

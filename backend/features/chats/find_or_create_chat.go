@@ -1,16 +1,20 @@
 package chats
 
 import (
-	"fmt"
-
 	"gui-onlinechat/backend/core/dto"
+	"gui-onlinechat/backend/core/errs"
+	"gui-onlinechat/backend/core/logger"
 )
 
-// FindOrCreateChat — поиск пользователя по имени + создание чата за один вызов.
+// FindOrCreateChat — поиск пользователя по имени + создание чата.
 func (f *Chats) FindOrCreateChat(query string) (*dto.SaveChatResponse, error) {
+	log := logger.For("chats", "FindOrCreateChat")
+	log.Debug("поиск или создание чата", "query", query)
+
 	uid, err := f.resolveUID(query)
 	if err != nil {
-		return nil, fmt.Errorf("пользователь %q не найден: %w", query, err)
+		log.Error("пользователь не найден", err, "query", query)
+		return nil, errs.Wrapf(errs.CodeNotFound, "chats.FindOrCreateChat", err, "пользователь %q не найден", query)
 	}
 
 	createReq := dto.SaveChatRequest{
@@ -20,7 +24,9 @@ func (f *Chats) FindOrCreateChat(query string) (*dto.SaveChatResponse, error) {
 	}
 	chatResp, err := f.CreateChat(createReq)
 	if err != nil {
-		return nil, fmt.Errorf("не удалось создать чат: %w", err)
+		log.Error("не удалось создать чат", err, "query", query)
+		return nil, errs.Wrapf(errs.CodeHTTP, "chats.FindOrCreateChat", err, "не удалось создать чат с %q", query)
 	}
+	log.Info("чат создан", "chatID", chatResp.ChatID)
 	return chatResp, nil
 }

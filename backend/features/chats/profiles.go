@@ -2,10 +2,13 @@ package chats
 
 import (
 	"gui-onlinechat/backend/core/dto"
+	"gui-onlinechat/backend/core/logger"
 )
 
 // GetChatsWithProfiles — список чатов с профилями собеседников.
 func (f *Chats) GetChatsWithProfiles() (*dto.ChatsWithProfilesResponse, error) {
+	log := logger.For("chats", "GetChatsWithProfiles")
+
 	chatsResp, err := f.GetUserChats()
 	if err != nil {
 		return nil, err
@@ -22,6 +25,7 @@ func (f *Chats) GetChatsWithProfiles() (*dto.ChatsWithProfilesResponse, error) {
 		result = append(result, cwp)
 	}
 
+	log.Info("чаты загружены", "count", len(result))
 	return &dto.ChatsWithProfilesResponse{Chats: result}, nil
 }
 
