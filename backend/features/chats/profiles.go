@@ -14,26 +14,27 @@ func (f *Chats) GetChatsWithProfiles() (*dto.ChatsWithProfilesResponse, error) {
 		return nil, err
 	}
 
+	currentUID := f.core.UserID
+
 	result := make([]dto.ChatWithProfile, 0, len(chatsResp.Chats))
 	for _, chat := range chatsResp.Chats {
 		cwp := dto.ChatWithProfile{Chat: chat}
-		if chat.Name != "" {
-			if profile, err := f.resolveProfileByName(chat.Name); err == nil {
-				cwp.Profile = profile
+
+		membersResp, err := f.GetChatMembers(int64(chat.ID))
+		if err == nil {
+			for _, uid := range membersResp.Members {
+				if int64(uid) != currentUID {
+					if profile, err := f.users.GetUserData(int64(uid)); err == nil {
+						cwp.Profile = profile
+						break
+					}
+				}
 			}
 		}
+
 		result = append(result, cwp)
 	}
 
 	log.Info("чаты загружены", "count", len(result))
 	return &dto.ChatsWithProfilesResponse{Chats: result}, nil
-}
-
-// resolveProfileByName разрешает имя чата в профиль собеседника.
-func (f *Chats) resolveProfileByName(name string) (*dto.GetUserResponse, error) {
-	uid, err := f.resolveUID(name)
-	if err != nil {
-		return nil, err
-	}
-	return f.users.GetUserData(uid)
 }

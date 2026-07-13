@@ -114,10 +114,10 @@ func (m *Manager) Start() {
 	}
 }
 
-// Close безопасно закрывает WebSocket и останавливает реконнект.
+// Close закрывает WebSocket-соединение. readLoop/writeLoop завершатся,
+// Start() выйдет из-за отсутствия кук (session удалён).
 func (m *Manager) Close() {
 	log := logger.For("ws", "Close")
-	close(m.shutdownCh)
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.conn != nil {

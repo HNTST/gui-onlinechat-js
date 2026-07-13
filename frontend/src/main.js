@@ -1,75 +1,36 @@
 import "./style.css";
-import { Login, Register } from "../wailsjs/go/main/App";
-import { initChats } from "./comps/chats.js";
+import { initApp } from "./App.js";
+import { setOnline, setOffline } from "./features/chat/onlineUsers.js";
+import { updateLastMessage } from "./features/chat/components/ChatList.js";
 
-if (window.__mainInitialized) {
-    // HMR — ничего не делаем, старые обработчики живы
-} else {
+if (!window.__mainInitialized) {
     window.__mainInitialized = true;
 
-    const authScreen = document.getElementById("auth-screen");
-    const chatLayout = document.getElementById("chat-layout");
-    const loginInput = document.getElementById("login-input");
-    const passwordInput = document.getElementById("password-input");
-    const loginBtn = document.getElementById("login-btn");
-    const registerBtn = document.getElementById("register-btn");
-    const loginError = document.getElementById("login-error");
+    document.addEventListener("contextmenu", (e) => e.preventDefault());
 
-    async function enterChat(userData) {
-        const userId = userData.id;
-        const displayName = userData.username || loginInput.value.trim();
-        authScreen.style.opacity = 0;
-        setTimeout(() => {
-            authScreen.classList.add("hidden");
-            chatLayout.classList.remove("hidden");
-            initChats("chat-layout", userId, displayName, userData);
-        }, 300);
-    }
-
-    async function doLogin() {
-        const username = loginInput.value.trim();
-        const password = passwordInput.value;
-        if (!username) return;
-        loginBtn.disabled = true;
-        registerBtn.disabled = true;
-        loginError.classList.add("hidden");
+    window.runtime.EventsOn("new_message", (data) => {
+        let msg;
         try {
-            const userData = await Login(username, password);
-            await enterChat(userData);
-        } catch (err) {
-            loginError.textContent = "Ошибка: " + (err.message || err);
-            loginError.classList.remove("hidden");
-        } finally {
-            loginBtn.disabled = false;
-            registerBtn.disabled = false;
+            msg = typeof data === "string" ? JSON.parse(data) : data;
+        } catch { return; }
+
+        if (msg.type === "online") {
+            setOnline(msg.user_id);
+            return;
         }
-    }
-
-    async function doRegister() {
-        const username = loginInput.value.trim();
-        const password = passwordInput.value;
-        if (!username) return;
-        loginBtn.disabled = true;
-        registerBtn.disabled = true;
-        loginError.classList.add("hidden");
-        try {
-            const userData = await Register(username, password);
-            await enterChat(userData);
-        } catch (err) {
-            loginError.textContent = "Ошибка: " + (err.message || err);
-            loginError.classList.remove("hidden");
-        } finally {
-            loginBtn.disabled = false;
-            registerBtn.disabled = false;
+        if (msg.type === "offline") {
+            setOffline(msg.user_id);
+            return;
         }
-    }
 
-    loginBtn.addEventListener("click", doLogin);
-    registerBtn.addEventListener("click", doRegister);
+        if (msg.chat_id) {
+            updateLastMessage(msg.chat_id, msg.message, msg.sent_at);
+        }
 
-    function onEnter(e) {
-        if (e.key === "Enter") doLogin();
-    }
-    loginInput.addEventListener("keydown", onEnter);
-    passwordInput.addEventListener("keydown", onEnter);
+        if (window.__onWsMessage) {
+            window.__onWsMessage(msg);
+        }
+    });
+
+    initApp();
 }

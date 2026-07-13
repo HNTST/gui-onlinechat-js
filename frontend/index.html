@@ -1,47 +1,68 @@
 <!doctype html>
-<html lang="ru">
+<html lang="ru" data-theme="dota">
     <head>
         <meta charset="UTF-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1.0" />
         <title>Onlinechat</title>
     </head>
-    <body>
+    <body class="bg-base-100 text-base-content">
         <div id="app">
-            <div id="auth-screen">
-                <div class="auth-box">
-                    <h2>Вход</h2>
-                    <input
-                        type="text"
-                        id="login-input"
-                        placeholder="логин"
-                        autocomplete="off"
-                    />
-                    <input
-                        type="password"
-                        id="password-input"
-                        placeholder="пароль"
-                        autocomplete="off"
-                    />
-                    <button class="dota-btn" id="login-btn" style="margin-bottom: 8px">войти</button>
-                    <button class="dota-btn" id="register-btn" style="background:linear-gradient(to bottom,#3d332a 0%,#2a241e 100%);border-color:#5d4a38">регистрация</button>
-                    <div id="login-error" class="hidden"></div>
-                </div>
-            </div>
+            <!-- ЭКРАН АВТОРИЗАЦИИ -->
+            <div id="auth-screen" class="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm transition-opacity duration-300">
+                <div class="auth-card w-80 flex flex-col items-center p-8 rounded border border-secondary/50 bg-base-200/80 shadow-[0_0_40px_rgba(163,129,68,0.08)]">
+                    <!-- Toggle: Вход / Регистрация -->
+                    <div class="flex gap-2 mb-8">
+                        <button id="tab-login" class="btn btn-sm btn-outline border-dashed border-base-content/30 text-base-content/60 uppercase tracking-widest text-xs px-6">Вход</button>
+                        <button id="tab-register" class="btn btn-sm btn-ghost text-base-content/40 uppercase tracking-widest text-xs px-6">Регистрация</button>
+                    </div>
 
-            <div id="chat-layout" class="hidden"></div>
+                    <!-- Поля -->
+                    <div class="w-full flex flex-col gap-5">
+                        <input
+                            type="text"
+                            id="login-input"
+                            placeholder="логин"
+                            autocomplete="off"
+                            class="auth-input w-full bg-transparent text-center tracking-wide text-base-content placeholder:text-base-content/25 border-0 border-b border-secondary/30 focus:border-primary/60 transition-colors pb-2 outline-none"
+                        />
+                        <input
+                            type="password"
+                            id="password-input"
+                            placeholder="пароль"
+                            autocomplete="off"
+                            class="auth-input w-full bg-transparent text-center tracking-wide text-base-content placeholder:text-base-content/25 border-0 border-b border-secondary/30 focus:border-primary/60 transition-colors pb-2 outline-none"
+                        />
+                        <input
+                            type="password"
+                            id="password-confirm-input"
+                            placeholder="повторите пароль"
+                            autocomplete="off"
+                            class="auth-input w-full bg-transparent text-center tracking-wide text-base-content placeholder:text-base-content/25 border-0 border-b border-secondary/30 focus:border-primary/60 transition-colors pb-2 outline-none hidden"
+                        />
+                    </div>
 
-            <div id="profile-modal" class="hidden">
-                <div class="modal-box">
-                    <h3>Настройки профиля</h3>
-                    <p>
-                        Панель кастомизации и редактирования карточки игрока
-                        находится в разработке.
-                    </p>
-                    <button class="dota-btn" id="modal-close-btn">
-                        ВЕРНУТЬСЯ
+                    <!-- Ошибка -->
+                    <div id="login-error" class="hidden text-error text-xs mt-3 text-center w-full"></div>
+
+                    <!-- Кнопка действия -->
+                    <button id="submit-btn" class="btn btn-ghost btn-lg uppercase tracking-[3px] text-base-content/80 font-bold mt-6 w-full">
+                        Войти
                     </button>
                 </div>
             </div>
+
+            <!-- ОСНОВНОЙ ИНТЕРФЕЙС -->
+            <div id="chat-layout" class="hidden"></div>
+
+            <!-- МОДАЛКА ПРОФИЛЯ -->
+            <dialog id="profile-modal" class="modal">
+                <div class="modal-box bg-gradient-to-br from-base-300 to-base-100 border-2 border-primary shadow-[0_0_50px_rgba(163,129,68,0.25)]">
+                    <div id="profile-modal-content"></div>
+                </div>
+                <form method="dialog" class="modal-backdrop">
+                    <button>close</button>
+                </form>
+            </dialog>
         </div>
         <script type="module" src="./src/main.js"></script>
     </body>
