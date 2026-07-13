@@ -12,6 +12,7 @@ import {
     EditChatMessage as GoEditChatMessage,
     DeleteChatMessage as GoDeleteChatMessage,
     GetAvatarBase64 as GoGetAvatarBase64,
+    MarkMessagesAsRead as GoMarkMessagesAsRead,
 } from "../../wailsjs/go/main/App";
 
 export const AuthAPI = {
@@ -28,6 +29,7 @@ export const ChatAPI = {
     sendMessage: GoSendChatMessage,
     editMessage: GoEditChatMessage,
     deleteMessage: GoDeleteChatMessage,
+    markMessagesAsRead: GoMarkMessagesAsRead,
 };
 
 export const UserAPI = {

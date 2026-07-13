@@ -27,3 +27,7 @@ export async function editMessage(chatId, msgId, newText) {
 export async function deleteMessage(chatId, msgId) {
     return ChatAPI.deleteMessage(Number(chatId), Number(msgId));
 }
+
+export async function markMessagesAsRead(chatId, lastReadMessageId) {
+    return ChatAPI.markMessagesAsRead(Number(chatId), { last_read_message_id: Number(lastReadMessageId) });
+}

@@ -2,7 +2,7 @@ import { AVATAR_STUB } from "../../core/constants.js";
 import { loadAvatarInto } from "../../core/components/Avatar.js";
 import { setCurrentUser, setCurrentChatId, getCurrentChatId, getCurrentUserId, clearCurrentChatId } from "./chatState.js";
 import { initCurrentUserProfile, putProfile, getCachedProfile, loadProfile } from "./profilesCache.js";
-import { sendMessage, getChatHistory, getChatMembers, editMessage, deleteMessage, findOrCreateChat } from "./chatService.js";
+import { sendMessage, getChatHistory, getChatMembers, editMessage, deleteMessage, findOrCreateChat, markMessagesAsRead } from "./chatService.js";
 import { logout } from "../auth/authService.js";
 import { isOnline } from "./onlineUsers.js";
 import { renderChatList, refreshChatList } from "./components/ChatList.js";
@@ -195,6 +195,17 @@ function bindEvents() {
     modal?.addEventListener("click", (e) => {
         if (e.target === modal) modal.close();
     });
+
+    // Scroll to bottom → mark as read
+    let scrollReadTimeout = null;
+    messagesContainer?.addEventListener("scroll", () => {
+        if (!isScrolledToBottom()) return;
+        if (scrollReadTimeout) return;
+        scrollReadTimeout = setTimeout(() => {
+            scrollReadTimeout = null;
+            markVisibleAsRead();
+        }, 500);
+    });
 }
 
 // ============================================================
@@ -324,9 +335,15 @@ async function openChatById(chatId, chatName) {
         if (history.messages) {
             history.messages.forEach((msg) => {
                 messagesContainer.appendChild(
-                    renderMessage(msg.message || "(пусто)", false, msg.sent_at, msg.sender_id, msg.id, msg.is_edited, msg.is_deleted)
+                    renderMessage(msg.message || "(пусто)", false, msg.sent_at, msg.sender_id, msg.id, msg.is_edited, msg.is_deleted, msg.is_read)
                 );
             });
+            const lastMsg = history.messages[history.messages.length - 1];
+            if (lastMsg?.id) {
+                markMessagesAsRead(chatId, lastMsg.id)
+                    .then(() => refreshReadChecks())
+                    .catch(() => {});
+            }
         }
         messagesContainer.scrollTop = messagesContainer.scrollHeight;
     } catch (err) {
@@ -474,8 +491,46 @@ function initWsListener() {
     window.__onWsMessage = (msg) => {
         if (Number(msg.chat_id) === Number(window.currentOpenChatId)) {
             appendMessageToUI(msg);
+            if (msg.id && isScrolledToBottom()) {
+                markMessagesAsRead(msg.chat_id, msg.id)
+                    .then(() => refreshReadChecks())
+                    .catch(() => {});
+            }
         }
     };
+}
+
+function isScrolledToBottom() {
+    if (!messagesContainer) return false;
+    return messagesContainer.scrollHeight - messagesContainer.scrollTop - messagesContainer.clientHeight < 50;
+}
+
+function markVisibleAsRead() {
+    if (!messagesContainer || !window.currentOpenChatId) return;
+    const allMsgs = messagesContainer.querySelectorAll("[data-msg-id]");
+    if (allMsgs.length === 0) return;
+    const lastEl = allMsgs[allMsgs.length - 1];
+    const lastId = Number(lastEl.dataset.msgId);
+    if (!lastId) return;
+    markMessagesAsRead(window.currentOpenChatId, lastId)
+        .then(() => refreshReadChecks())
+        .catch(() => {});
+}
+
+const READ_SVG = `<svg width="12" height="8" viewBox="0 0 16 10" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 5l3 3 6-7"/><path d="M6 5l3 3 6-7"/></svg>`;
+
+function refreshReadChecks() {
+    if (!messagesContainer) return;
+    const myId = Number(getCurrentUserId());
+    messagesContainer.querySelectorAll("[data-msg-id]").forEach((el) => {
+        if (Number(el.dataset.senderId) !== myId) return;
+        const check = el.querySelector("[data-read-check]");
+        if (!check) return;
+        if (check.dataset.read === "true") return;
+        check.dataset.read = "true";
+        check.className = "text-[10px] text-primary";
+        check.innerHTML = READ_SVG;
+    });
 }
 
 function appendMessageToUI(msg) {
@@ -488,7 +543,7 @@ function appendMessageToUI(msg) {
         if (exists) return;
     }
 
-    const el = renderMessage(msg.message || "", false, msg.sent_at || null, Number(msg.sender_id), msg.id, msg.is_edited, msg.is_deleted);
+    const el = renderMessage(msg.message || "", false, msg.sent_at || null, Number(msg.sender_id), msg.id, msg.is_edited, msg.is_deleted, msg.is_read);
     messagesContainer.appendChild(el);
     messagesContainer.scrollTop = messagesContainer.scrollHeight;
 }
