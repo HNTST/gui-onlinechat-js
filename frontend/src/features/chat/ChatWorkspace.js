@@ -1,13 +1,13 @@
 import { AVATAR_STUB } from "../../core/constants.js";
 import { loadAvatarInto } from "../../core/components/Avatar.js";
-import { setCurrentUser, setCurrentChatId, getCurrentChatId, getCurrentUserId, clearCurrentChatId } from "./chatState.js";
+import { setCurrentUser, setCurrentChatId, getCurrentChatId, getCurrentUserId, clearCurrentChatId, clearUnread } from "./chatState.js";
 import { initCurrentUserProfile, putProfile, getCachedProfile, loadProfile } from "./profilesCache.js";
 import { sendMessage, getChatHistory, getChatMembers, editMessage, deleteMessage, findOrCreateChat, markMessagesAsRead } from "./chatService.js";
 import { logout } from "../auth/authService.js";
 import { isOnline } from "./onlineUsers.js";
-import { renderChatList, refreshChatList } from "./components/ChatList.js";
+import { renderChatList, refreshChatList, resetCachedUnread } from "./components/ChatList.js";
 import { renderMessage } from "./components/MessageBubble.js";
-import { renderChatHeader } from "./components/ChatHeader.js";
+import { renderChatHeader, setPartnerLastSeen } from "./components/ChatHeader.js";
 import { renderInputBar } from "./components/InputBar.js";
 import { openProfileModal } from "../profile/components/ProfileModal.js";
 
@@ -37,13 +37,13 @@ function buildLayout(container, userId, username) {
     // Sidebar
     sidebar = document.createElement("div");
     sidebar.id = "sidebar";
-    sidebar.className = "bg-base-200/80 border border-secondary/50 flex flex-col overflow-hidden rounded";
+    sidebar.className = "bg-base-200 border border-secondary/40 flex flex-col overflow-hidden rounded";
 
     // User panel
     const userPanel = document.createElement("div");
     userPanel.id = "profile-card";
     userPanel.className =
-        "flex items-center gap-3 px-4 py-3.5 cursor-pointer bg-gradient-to-b from-secondary/50 to-transparent border-b border-secondary/40 hover:from-secondary/60 transition-colors flex-shrink-0";
+        "flex items-center gap-3 px-4 py-3.5 cursor-pointer bg-gradient-to-b from-secondary/40 to-transparent border-b border-secondary/30 hover:from-secondary/50 transition-colors flex-shrink-0";
 
     const avatarWrap = document.createElement("div");
     avatarWrap.className = "avatar";
@@ -118,7 +118,7 @@ function buildLayout(container, userId, username) {
     chatWindow = document.createElement("div");
     chatWindow.id = "chat-window";
     chatWindow.className =
-        "absolute left-4 right-4 bottom-4 h-[calc(75%-16px)] bg-base-200/80 border border-secondary/50 shadow-2xl flex flex-col z-10 rounded";
+        "absolute left-4 right-4 bottom-4 h-[calc(75%-16px)] bg-base-200 border border-secondary/40 shadow-2xl flex flex-col z-10 rounded";
 
     const header = renderChatHeader();
     titleEl = header.querySelector("#chat-window-title");
@@ -309,9 +309,12 @@ async function openChatById(chatId, chatName) {
     const targetLi = listEl.querySelector(`[data-chat-id="${chatId}"]`);
     if (targetLi) {
         targetLi.classList.add("bg-primary/10", "border-l-primary");
-        const badge = targetLi.querySelector(".badge");
+        const badge = targetLi.querySelector("[data-unread-badge]");
         if (badge) badge.remove();
     }
+
+    clearUnread(chatId);
+    resetCachedUnread(chatId);
 
     setCurrentChatId(chatId);
 
@@ -363,6 +366,7 @@ async function openChatById(chatId, chatName) {
             if (titleEl && profile?.username) {
                 titleEl.textContent = profile.username;
             }
+            setPartnerLastSeen(profile?.last_seen || null);
             const dot = document.getElementById("chat-header-online-dot");
             if (dot) {
                 if (isOnline(otherMemberId)) {
@@ -544,6 +548,7 @@ function appendMessageToUI(msg) {
     }
 
     const el = renderMessage(msg.message || "", false, msg.sent_at || null, Number(msg.sender_id), msg.id, msg.is_edited, msg.is_deleted, msg.is_read);
+    el.classList.add("msg-new");
     messagesContainer.appendChild(el);
     messagesContainer.scrollTop = messagesContainer.scrollHeight;
 }

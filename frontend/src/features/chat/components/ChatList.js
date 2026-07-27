@@ -3,6 +3,7 @@ import { loadAvatarInto } from "../../../core/components/Avatar.js";
 import { putProfile } from "../profilesCache.js";
 import { getChatsWithProfiles } from "../chatService.js";
 import { isOnline, onStatusChange } from "../onlineUsers.js";
+import { onUnreadChange, getUnreadCount } from "../chatState.js";
 
 let cachedEntries = [];
 let cachedListEl = null;
@@ -55,11 +56,13 @@ function createChatItem(entry, onChatClick) {
     li.appendChild(avatarImg);
     li.appendChild(infoDiv);
 
-    if (chat.unread_count > 0) {
+    const totalUnread = (chat.unread_count || 0) + getUnreadCount(chat.id);
+    if (totalUnread > 0) {
         const badge = document.createElement("div");
         badge.className =
             "badge badge-primary badge-sm text-base-100 font-bold min-w-[18px] h-[18px] flex-shrink-0";
-        badge.textContent = chat.unread_count > 99 ? "99+" : chat.unread_count;
+        badge.dataset.unreadBadge = "";
+        badge.textContent = totalUnread > 99 ? "99+" : totalUnread;
         li.appendChild(badge);
     }
 
@@ -125,11 +128,41 @@ export async function refreshChatList(listEl, onChatClick) {
                 });
             });
         }
+
+        if (!listEl._unreadListener) {
+            listEl._unreadListener = onUnreadChange(() => {
+                cachedEntries.forEach((entry) => {
+                    const li = cachedListEl.querySelector(`[data-chat-id="${entry.chat.id}"]`);
+                    if (!li) return;
+                    const existing = li.querySelector("[data-unread-badge]");
+                    const total = (entry.chat.unread_count || 0) + getUnreadCount(entry.chat.id);
+                    if (total > 0) {
+                        if (existing) {
+                            existing.textContent = total > 99 ? "99+" : total;
+                        } else {
+                            const badge = document.createElement("div");
+                            badge.className =
+                                "badge badge-primary badge-sm text-base-100 font-bold min-w-[18px] h-[18px] flex-shrink-0";
+                            badge.dataset.unreadBadge = "";
+                            badge.textContent = total > 99 ? "99+" : total;
+                            li.appendChild(badge);
+                        }
+                    } else if (existing) {
+                        existing.remove();
+                    }
+                });
+            });
+        }
     } catch (err) {
         console.error("Ошибка загрузки чатов:", err);
         listEl.innerHTML =
             '<li class="p-5 text-center text-error text-sm">Ошибка загрузки чатов</li>';
     }
+}
+
+export function resetCachedUnread(chatId) {
+    const entry = cachedEntries.find((e) => Number(e.chat.id) === Number(chatId));
+    if (entry) entry.chat.unread_count = 0;
 }
 
 export function updateLastMessage(chatId, text, sentAt) {

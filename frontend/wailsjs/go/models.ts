@@ -87,6 +87,7 @@ export namespace dto {
 	    username: string;
 	    avatar_id?: number;
 	    reg?: string;
+	    last_seen?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new GetUserResponse(source);
@@ -98,6 +99,7 @@ export namespace dto {
 	        this.username = source["username"];
 	        this.avatar_id = source["avatar_id"];
 	        this.reg = source["reg"];
+	        this.last_seen = source["last_seen"];
 	    }
 	}
 	export class MessageDTO {
