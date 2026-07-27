@@ -2,6 +2,7 @@ package ws
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/url"
 	"sync"
@@ -11,6 +12,17 @@ import (
 	"github.com/gorilla/websocket"
 	"gui-onlinechat/backend/core/errs"
 	"gui-onlinechat/backend/core/logger"
+)
+
+const (
+	// readDeadline — сервер ждёт Pong 60с, даём запас.
+	readDeadline = 75 * time.Second
+
+	// baseReconnect — начальная задержка переподключения.
+	baseReconnect = 3 * time.Second
+
+	// maxReconnect — максимальная задержка переподключения.
+	maxReconnect = 30 * time.Second
 )
 
 // EmitFunc — функция для отправки событий во фронтенд.
@@ -40,9 +52,9 @@ func New(serverAddr string, httpClient *http.Client) *Manager {
 	}
 }
 
-func (m *Manager) SetUserID(id int64)  { m.userID = id }
-func (m *Manager) GetUserID() int64    { return m.userID }
-func (m *Manager) SetEmitFn(fn EmitFunc) { m.emitFn = fn }
+func (m *Manager) SetUserID(id int64)       { m.userID = id }
+func (m *Manager) GetUserID() int64         { return m.userID }
+func (m *Manager) SetEmitFn(fn EmitFunc)    { m.emitFn = fn }
 
 // Start запускает цикл WS-жизни. Блокирующий, запускать в горутине.
 func (m *Manager) Start() {
@@ -51,7 +63,15 @@ func (m *Manager) Start() {
 	if !m.started.CompareAndSwap(false, true) {
 		return
 	}
-	defer m.started.Store(false)
+	defer func() {
+		m.started.Store(false)
+		// Переинициализируем shutdownCh для следующего Start() (повторный логин).
+		m.mu.Lock()
+		m.shutdownCh = make(chan struct{})
+		m.mu.Unlock()
+	}()
+
+	reconnectDelay := baseReconnect
 
 	for {
 		select {
@@ -71,11 +91,17 @@ func (m *Manager) Start() {
 
 		if err := m.connect(); err != nil {
 			log.Error("ошибка подключения", err)
-			time.Sleep(3 * time.Second)
+			time.Sleep(reconnectDelay)
+			reconnectDelay = min(reconnectDelay*2, maxReconnect)
 			continue
 		}
 
+		reconnectDelay = baseReconnect
 		log.Info("подключение установлено, запуск циклов")
+
+		if m.emitFn != nil {
+			m.emitFn("ws_connected")
+		}
 
 		m.sendCh = make(chan []byte, 64)
 		stopCh := make(chan struct{})
@@ -104,12 +130,17 @@ func (m *Manager) Start() {
 		m.mu.Unlock()
 		close(m.sendCh)
 
+		// Уведомляем фронтенд об обрыве
+		if m.emitFn != nil {
+			m.emitFn("ws_closed")
+		}
+
 		select {
 		case <-m.shutdownCh:
 			return
 		default:
-			log.Info("переподключение через 3 сек")
-			time.Sleep(3 * time.Second)
+			log.Info("переподключение", "delay", reconnectDelay)
+			time.Sleep(reconnectDelay)
 		}
 	}
 }
@@ -125,6 +156,7 @@ func (m *Manager) Close() {
 		m.conn = nil
 		log.Info("соединение закрыто")
 	}
+	close(m.shutdownCh)
 }
 
 // Send отправляет JSON через канал в WS writer-горутину.
@@ -173,6 +205,13 @@ func (m *Manager) connect() error {
 		return errs.Wrap(errs.CodeHTTP, "ws.connect", err)
 	}
 
+	// Pong handler — сбрасывает read deadline при получении Pong от сервера.
+	// gorilla/websocket автоматически отвечает на Ping → Pong.
+	conn.SetPongHandler(func(string) error {
+		conn.SetReadDeadline(time.Now().Add(readDeadline))
+		return nil
+	})
+
 	m.mu.Lock()
 	m.conn = conn
 	m.mu.Unlock()
@@ -181,6 +220,8 @@ func (m *Manager) connect() error {
 	return nil
 }
 
+// readLoop читает сообщения из WS. Ping/pong обрабатываются gorilla/websocket
+// на уровне протокола. Read deadline сбрасывается при каждом полученном сообщении.
 func (m *Manager) readLoop() {
 	log := logger.For("ws", "readLoop")
 
@@ -193,11 +234,32 @@ func (m *Manager) readLoop() {
 			return
 		}
 
-		_, data, err := conn.ReadMessage()
+		// Устанавливаем deadline на первое чтение.
+		conn.SetReadDeadline(time.Now().Add(readDeadline))
+
+		_, reader, err := conn.NextReader()
 		if err != nil {
-			log.Error("ошибка чтения", err)
+			if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
+				log.Info("соединение закрыто штатно")
+			} else if err == io.EOF {
+				log.Warn("соединение разорвано (EOF)")
+			} else {
+				log.Error("ошибка чтения", err)
+			}
 			return
 		}
+
+		// Ping/Pong обрабатываются gorilla/websocket автоматически в advanceFrame().
+		// NextReader() возвращает только TextMessage/BinaryMessage.
+
+		data, err := io.ReadAll(reader)
+		if err != nil {
+			log.Error("ошибка чтения payload", err)
+			return
+		}
+
+		// Сбрасываем deadline после успешного чтения.
+		conn.SetReadDeadline(time.Now().Add(readDeadline))
 
 		log.Debug("получено", "data", string(data))
 		if m.emitFn != nil {
@@ -232,4 +294,11 @@ func (m *Manager) writeLoop(stopCh <-chan struct{}) {
 			return
 		}
 	}
+}
+
+func min(a, b time.Duration) time.Duration {
+	if a < b {
+		return a
+	}
+	return b
 }

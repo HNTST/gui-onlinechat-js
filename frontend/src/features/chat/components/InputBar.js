@@ -1,7 +1,7 @@
 export function renderInputBar() {
     const bar = document.createElement("div");
     bar.className =
-        "px-5 py-3 bg-base-200/50 border-t border-secondary/30 flex gap-2 items-center flex-shrink-0";
+        "px-5 py-3 bg-base-200 border-t border-secondary/30 flex gap-2 items-center flex-shrink-0";
 
     const input = document.createElement("input");
     input.type = "text";
